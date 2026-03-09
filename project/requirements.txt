@@ -1,0 +1,10 @@
+streamlit
+pdfplumber
+pandas
+
+streamlit
+pdfplumber
+camelot-py
+pandas
+google-api-python-client
+
