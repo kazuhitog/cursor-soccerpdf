@@ -1,6 +1,12 @@
+# 本リポジトリのアプリは project/ にあります。
+# 依存関係のインストールは以下で行ってください:
+#   cd project && pip install -r requirements.txt
+# 中身は project/requirements.txt と同一です。
+
 streamlit
 pdfplumber
-camelot-py
 pandas
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
 google-api-python-client
-
