@@ -1,1921 +1,590 @@
-# サッカー日程PDF → Googleカレンダー登録ツール仕様
+# サッカー試合PDF → Googleカレンダー ツール 仕様書
 
-## プロジェクトディレクトリ
+このドキュメントのみから **同一アプリを再構築可能** な仕様とする。
+
+---
+
+## 1 目的・概要
+
+- サッカーリーグの **試合日程PDF** を解析し、指定チームの試合を抽出する。
+- **Googleカレンダー登録リンク** の生成と、**Googleログインによるカレンダー自動登録** の両方に対応する。
+- 加えて **CSV / ICS エクスポート** と **PDF解析デバッグ** を提供する。
+
+---
+
+## 2 ディレクトリ構成
+
+```
+cursor_soccerPDF/
+├── README.md
+└── project/
+    ├── app.py
+    ├── requirements.txt
+    ├── .gitignore
+    ├── modules/
+    │   ├── pdf_reader.py
+    │   ├── match_parser.py
+    │   ├── calendar_link.py
+    │   └── google_calendar_api.py
+    ├── data/
+    │   └── pdf/
+    └── logs/
+        ├── app.log
+        ├── parser_error.log
+        ├── pdf_debug.log
+        └── google_calendar.log
+```
+
+- **credentials.json** と **token.json** は `project/` 直下に配置する（git 管理しない）。
+
+---
+
+## 3 依存関係・起動
+
+### 3.1 依存ライブラリ
+
+```
+streamlit
+pdfplumber
+pandas
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client
+```
+
+### 3.2 インストール・起動
+
+```bash
+cd project
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+デフォルトは **http://localhost:8501** で起動する。
+
+---
+
+## 4 処理フロー（全体）
+
+```
+PDFアップロード
+  → PDFテキスト抽出 (pdf_reader)
+  → 開催日・会場・年代・試合行の解析 (match_parser)
+  → チーム名でフィルタ (match_parser)
+  → 結果表示
+  → カレンダー追加リンク生成 (calendar_link)
+  → （任意）Googleログイン → カレンダー選択 → 試合をカレンダー登録 (google_calendar_api)
+  → CSV / ICS エクスポート
+```
+
+---
+
+## 5 PDF 構造と解析ルール
+
+### 5.1 テキスト例
+
+```
+開催日： 4月5日 会場：潟東サルビアサッカー場
+
+60
+1 9:30 新潟四十雀60 × NFC60 PRSフューチャーズ SF長岡60
+2 10:40 PRSフューチャーズ × SF長岡60 Ｍ.sea60 ピュアーズ60
+```
+
+### 5.2 開催日・会場（ヘッダー行）
+
+- パターン: `開催日：\s*(\d+月\d+日)\s*会場：(.+)`
+- 取得: `current_date`（年は実行年または指定年で補完し `YYYY-MM-DD`）、`current_location`
+
+### 5.3 年代グループ行
+
+- パターン: `^\d{2}[A-Z]?$`（例: `60`, `50A`, `50B`, `40A` …）
+- 検出時に `current_age_group` を更新
+
+### 5.4 試合行判定
+
+- 行頭が「数字 + 空白 + 時刻」: `^\d+\s+\d{1,2}:\d{2}`
+- 形式: `No 時刻 Home × Away 主審 副審`（× の前後がホーム・アウェイ）
+
+### 5.5 試合行のトークン分割
+
+- 通常行（年代が直前行で確定している）:  
+  `tokens = line.split()` のとき  
+  `no=tokens[0], time=tokens[1], home=tokens[2], away=tokens[4], referee=tokens[5], assistant=tokens[6]`
+- 年代付き行（行頭が年代）:  
+  `age_group=tokens[0], no=tokens[1], time=tokens[2], home=tokens[3], away=tokens[5], referee=tokens[6], assistant=tokens[7]`
+
+### 5.6 特殊チーム名
+
+- スペースを含むチーム名は解析前に一時置換し、解析後に復元する。
+- 例: `SPECIAL_TEAM_NAMES = ["FC revoltijo", "fc ziarllo", "Regalis F.C","PC ONZ長岡50"]`  
+  前処理: `line.replace("FC revoltijo", "FC_revoltijo")` 等、解析後の表示時: `name.replace("_", " ")`
+
+---
+
+## 6 データ構造
+
+### 6.1 試合（Match）
+
+| 項目 | 例 |
+|------|-----|
+| date | 2026-04-05 |
+| location | 潟東サルビアサッカー場 |
+| age_group | 60 |
+| no | 1 |
+| time | 09:30 |
+| home | 新潟四十雀60 |
+| away | NFC60 |
+| referee | PRSフューチャーズ |
+| assistant | SF長岡60 |
+
+### 6.2 チームフィルタ
+
+- UIで指定した `team_name` に対し、`team_name in home` または `team_name in away` で抽出する。
+
+---
+
+## 7 モジュール仕様
+
+### 7.1 pdf_reader.py
+
+- `read_pdf_lines(pdf_path: Path) -> List[str]`  
+  PDF を開き、全ページのテキストを `page.extract_text()` で取得し、行リストで返す。
+
+### 7.2 match_parser.py
+
+- `Match`: 上記の date, location, age_group, no, time, home, away, referee, assistant を持つデータクラス。
+- `parse_matches_from_lines(lines, year=None) -> List[Match]`: 開催日・会場・年代・試合行の解析ルールに従い Match のリストを返す。
+- `filter_matches_by_team(matches, team_name) -> List[Match]`: チーム名でフィルタ。
+- 解析エラーは `logs/parser_error.log` に記録する。
+
+### 7.3 calendar_link.py
+
+- `build_google_calendar_url(match: Match) -> str`  
+  - ベース: `https://calendar.google.com/calendar/render?action=TEMPLATE`  
+  - パラメータ: `text={home} vs {away}`、`dates=YYYYMMDDTHHMMSS/YYYYMMDDTHHMMSS`（終了は開始+120分）、`location={location}`  
+  - 日本語・スペースは URL エンコードする。
+
+### 7.4 google_calendar_api.py
+
+- **認証**
+  - `project/credentials.json`（Google Cloud の OAuth クライアント「デスクトップ」で取得）を参照。
+  - `project/token.json` にアクセス/リフレッシュトークンを保存（初回認証後に作成）。
+  - スコープ: `calendar.readonly`（カレンダー一覧取得）、`calendar.events`（イベント登録）。
+- **認証フロー（初回・トークンなし）**
+  - 固定ポート（例: 8080）でリダイレクト URI を `http://localhost:8080/` に設定。
+  - 認証 URL を取得し、**アプリ内に「ここをクリックしてGoogleでログイン」リンクとして表示**する（ブラウザが自動で開かない環境への対応）。
+  - 上記ポートでローカルサーバーを 1 リクエスト待ち受け、コールバックでトークン取得 → `token.json` 保存。
+  - Google Cloud Console の OAuth クライアントに **リダイレクト URI `http://localhost:8080/`** を追加すること。
+- **API**
+  - `get_credentials_path() -> Path | None`: credentials.json のパス。
+  - `get_credentials(auth_url_callback=None)`: 認証情報を返す。未認証時は `auth_url_callback(url)` で URL を渡し、リンク表示用に **NeedUserToClickAuthLinkError(auth_url)** を raise してよい。
+  - `list_calendars() -> List[dict]`: `calendarList.list` で id, summary, primary 等を取得。
+  - `insert_events(calendar_id, matches: List[Match]) -> (成功数, エラーメッセージリスト)`: 各 Match を `events.insert` で登録。イベントは下記構造。
+- **イベント構造（events.insert の body）**
+  - summary: `{home} vs {away}`
+  - location: Match の location
+  - description: 年代・試合番号・主審・副審をテキストで記載
+  - start/end: dateTime を ISO 風（例: 2026-04-05T09:30:00）、timeZone: Asia/Tokyo。試合時間 + 120分で終了。
+- エラー・操作ログは `logs/google_calendar.log` に記録する。
+
+---
+
+## 8 Streamlit UI（app.py）
+
+### 8.1 画面構成
+
+1. **チーム名入力**: `st.text_input("チーム名")`（デフォルト例: ハマーズ）
+2. **PDFアップロード**: `st.file_uploader` で試合日程PDF
+3. **「試合を抽出する」**: 解析実行。結果は `st.session_state` に保存（matches_all, filtered_matches, df_team）し、再実行時もリンク生成・登録まで利用可能にする。
+4. **試合一覧**: テーブル表示
+5. **「カレンダー追加リンク生成」**: 各試合の Google カレンダー URL を表示（リンク一覧）
+6. **⑤-2 Googleカレンダーへ自動登録**
+   - **「Googleログイン」**: 認証実行。ブラウザが開かない場合は `NeedUserToClickAuthLinkError` を捕捉し、認証 URL をアプリ内に表示。「認証完了したらもう一度 Googleログインを押す」と案内。
+   - ログイン成功後: **登録カレンダー** の `st.selectbox`、**「試合をカレンダー登録」** で一括登録。成功件数・失敗メッセージを表示。
+7. **⑥ 試合エクスポート**: CSV ダウンロード、ICS ダウンロード
+8. **PDFデバッグモード**（チェック時）: 全テキスト・行番号付き・PDF要素・文字座標などを表示。ログは `logs/pdf_debug.log`
+
+### 8.2 CSV 形式
+
+ヘッダー: `date,location,age_group,no,time,home,away,referee,assistant`。日付・時刻は仕様に合わせた形式で出力。
+
+### 8.3 ICS 形式
+
+- `BEGIN:VEVENT` / `END:VEVENT`
+- SUMMARY: `{home} vs {away}`
+- DTSTART/DTEND: 日時形式（UTC または TZID に合わせる）
+- LOCATION: 会場
+
+---
+
+## 9 ログ・セキュリティ
+
+- **ログ**: `logs/app.log`, `logs/parser_error.log`, `logs/pdf_debug.log`, `logs/google_calendar.log`
+- **.gitignore**: `credentials.json`, `token.json` を必ず含める。
+
+---
+
+## 10 完成機能一覧
+
+- PDF 解析（開催日・会場・年代・試合行）
+- チーム名フィルタ
+- Google カレンダー追加リンク生成
+- Google ログインによるカレンダー一覧取得・試合の自動登録（認証 URL 表示対応）
+- CSV / ICS エクスポート
+- PDF デバッグモード
+
+この仕様書に従って実装すれば、同一のアプリを再構築できる。
+
+
+# UI改善仕様  
+サッカー日程PDF → Googleカレンダー登録ツール
+
+対象ディレクトリ
 
 ```
 cursor-soccerPDF/project/
+```
+
+対象ファイル
+
+```
+app.py
 ```
 
 ---
 
 # 1 目的
 
-リーグから配布される **試合日程PDF** から  
-任意のチームの試合のみ抽出し  
-Googleカレンダーへ登録するツール。
+UIの操作性を向上させるため以下を改善する。
 
-目的
-
-- 手動入力の削減
-- 試合登録ミス防止
-- チーム共有
+- チーム名入力とPDFアップロードを横並びにする
+- セクションタイトルの番号を削除する
+- 全試合データをアコーディオン（折りたたみ）表示にする
+- Googleログイン状態を視覚的に表示する
+- Googleログアウトを可能にする
 
 ---
 
-# 2 システム構成
+# 2 チーム名入力とPDFアップロードを横並び
 
-処理フロー
+## 変更前
 
 ```
+チーム名入力
 PDFアップロード
-     ↓
-テキスト抽出
-     ↓
-日付ブロック解析
-     ↓
-試合行抽出
-     ↓
-チーム名フィルタ
-     ↓
-Googleカレンダーリンク生成
+```
+
+縦並び。
+
+---
+
+## 変更後
+
+```
+チーム名入力 | PDFアップロード
+```
+
+横並び。
+
+---
+
+## Streamlit実装
+
+```
+col1, col2 = st.columns(2)
+
+with col1:
+    team_name = st.text_input("チーム名")
+
+with col2:
+    uploaded_file = st.file_uploader(
+        "試合日程PDF",
+        type="pdf"
+    )
 ```
 
 ---
 
-# 3 入力PDFフォーマット
+# 3 セクション番号削除
 
-PDF内テキストは以下のような構造
-
-```
-4月5日
-
-1 9:30 新潟四十雀60 × NFC60
-2 10:40 PRSフューチャーズ × SF長岡60
-3 11:50 Ｍ.sea60 × ピュアーズ60
-```
-
-抽出対象
-
-|項目|例|
-|---|---|
-日付|4月5日|
-開始時間|9:30|
-ホーム|新潟四十雀60|
-アウェイ|NFC60|
-
----
-
-# 4 チーム名設定（変更可能）
-
-設定はUIから入力
-
-例
+## 変更前
 
 ```
-自チーム名
-
-新潟四十雀60
-```
-
-または
-
-```
-M.sea60
+① チーム名入力
+② PDFアップロード
+③ 抽出結果
 ```
 
 ---
 
-# 5 抽出条件
-
-試合行に
+## 変更後
 
 ```
-team_name
-```
-
-が含まれる場合のみ抽出
-
-例
-
-```
-新潟四十雀60 × NFC60
-```
-
-または
-
-```
-NFC60 × 新潟四十雀60
+チーム名
+試合日程PDF
+抽出結果
 ```
 
 ---
 
-# 6 データ抽出ロジック
+## 修正方法
 
-正規表現
-
-```
-(\d+:\d+)\s+(.+?)\s×\s(.+)
-```
-
-取得データ
+変更前
 
 ```
-time
-teamA
-teamB
+st.header("① チーム名入力")
+```
+
+変更後
+
+```
+st.subheader("チーム名")
 ```
 
 ---
 
-# 7 日付管理
+# 4 全試合抽出のアコーディオン表示
 
-PDF内に
+全試合データは通常ユーザーが見る必要がないため  
+折りたたみ表示とする。
 
-```
-4月5日
-4月12日
-```
+---
 
-などの日付ブロックがある。
-
-現在の解析日付として保持する。
-
-例
+## 表示仕様
 
 ```
-current_date = 2026-04-05
+▶ 全試合データ
+```
+
+クリックすると展開。
+
+---
+
+## Streamlit実装
+
+```
+with st.expander("全試合データ", expanded=False):
+
+    st.dataframe(all_matches_df)
 ```
 
 ---
 
-# 8 内部データ構造
+# 5 Googleログイン状態表示
+
+Googleログイン状態を  
+ユーザーが分かるようにする。
+
+---
+
+## 未ログイン状態
 
 ```
-match = {
-
-date: "2026-04-05",
-time: "09:30",
-teamA: "新潟四十雀60",
-teamB: "NFC60",
-location: ""
-}
+[ Googleでログイン ]
 ```
 
 ---
 
-# 9 Googleカレンダー登録
-
-GoogleカレンダーURL生成
+## ログイン状態
 
 ```
-https://calendar.google.com/calendar/render?action=TEMPLATE
-&text=サッカー試合
-&dates=20260405T093000/20260405T113000
-&details=新潟四十雀60 vs NFC60
+🟢 Googleログイン済み
+[ログアウト]
 ```
 
 ---
 
-# 10 試合時間
+# 6 セッション管理
 
-終了時間は固定
+Googleログイン状態は  
+Streamlitセッションで管理する。
+
+---
+
+## 初期化
 
 ```
-120分
-```
-
-例
-
-```
-9:30 → 11:30
+if "google_logged_in" not in st.session_state:
+    st.session_state.google_logged_in = False
 ```
 
 ---
 
-# 11 UI（Streamlit）
-
-画面構成
-
-### ① チーム名入力
+# 7 Googleログインボタン
 
 ```
-st.text_input("チーム名")
-```
+if not st.session_state.google_logged_in:
 
-例
+    if st.button("Googleでログイン"):
 
-```
-M.sea60
+        creds = google_login()
+
+        st.session_state.google_logged_in = True
+
+        st.success("Googleログイン成功")
 ```
 
 ---
 
-### ② PDFアップロード
+# 8 ログイン状態表示
 
 ```
-st.file_uploader("試合日程PDF")
-```
+else:
 
----
+    st.markdown("🟢 Googleログイン済み")
 
-### ③ 抽出結果
+    if st.button("ログアウト"):
 
-|日付|時間|対戦|
-|---|---|---|
-|4/5|9:30|新潟四十雀60 vs NFC60|
-
----
-
-### ④ Googleカレンダー登録
-
-```
-カレンダー追加リンク生成
+        st.session_state.google_logged_in = False
 ```
 
 ---
 
-# 12 ディレクトリ構造
+# 9 Googleアイコン表示
+
+Googleログイン状態には  
+Googleアイコンを表示する。
+
+---
+
+## GoogleアイコンURL
 
 ```
-cursor-soccerPDF
-└ project
-
-    app.py
-
-    modules
-        pdf_reader.py
-        match_parser.py
-        calendar_link.py
-
-    data
-        pdf
-
-    logs
-        app.log
+https://www.google.com/favicon.ico
 ```
 
 ---
 
-# 13 使用ライブラリ
+## 表示コード
 
 ```
-streamlit
-pdfplumber
-pandas
-regex
-datetime
-```
+col1, col2 = st.columns([1,8])
 
-インストール
+with col1:
+    st.image("https://www.google.com/favicon.ico", width=20)
 
-```
-pip install streamlit pdfplumber pandas
+with col2:
+    st.write("Googleログイン済み")
 ```
 
 ---
 
-# 14 MVP（最初に作る機能）
+# 10 完成UI構成
+
+最終UIレイアウト
 
 ```
+---------------------------------
+
+サッカー日程 → Googleカレンダー登録
+
+---------------------------------
+
+チーム名 | PDFアップロード
+
+---------------------------------
+
+Googleログイン
+
+---------------------------------
+
+自チーム試合一覧
+
+---------------------------------
+
+Googleカレンダー登録
+
+---------------------------------
+
+▶ 全試合データ
+
+---------------------------------
+```
+
+---
+
+# 11 UIフロー
+
+```
+チーム名入力
+↓
 PDFアップロード
 ↓
 試合抽出
 ↓
-チーム名フィルタ
+自チーム試合表示
 ↓
-Googleカレンダーリンク生成
-```
-
----
-
-# 15 実行
-
-```
-cd cursor-soccerPDF/project
-
-streamlit run app.py
-```
-
----
-
-# 16 将来拡張
-
-## OCR対応
-
-画像PDFにも対応
-
-```
-Tesseract OCR
-```
-
----
-
-## Googleカレンダー自動登録
-
-API使用
-
-```
-Google Calendar API
-```
-
----
-
-## LINE通知
-
-```
-試合前日
-試合2時間前
-```
-
----
-
-# 17 完成状態
-
-```
-PDFを入れる
+Googleログイン
 ↓
+Googleカレンダー登録
+↓
+全試合データ確認（折りたたみ）
+```
+
+---
+
+# 12 今後のUI改善案（将来）
+
+以下の機能を追加すると操作性が向上する。
+
+---
+
+## 自チーム試合のみ表示スイッチ
+
+```
+☑ 自チーム試合のみ表示
+```
+
+ON
+
+```
+自チーム試合のみ表示
+```
+
+OFF
+
+```
+全試合表示
+```
+
+---
+
+## カレンダー一括登録
+
+```
+[全試合をGoogleカレンダー登録]
+```
+
+---
+
+## カレンダービュー表示
+
+```
+月カレンダー形式で試合表示
+```
+
+---
+
+# 13 完成状態
+
+```
 チーム名入力
+PDFアップロード
 ↓
-自チーム試合だけ抽出
+試合抽出
 ↓
-Googleカレンダーリンク生成
+Googleログイン
+↓
+試合をGoogleカレンダー登録
+↓
+全試合データ確認
 ```
 
 ---
 
 # 完成
 
-サッカー試合日程を  
-**10秒でGoogleカレンダー登録できるツール**
-
-
-## 追加仕様
-
-# 追加仕様
-
-## 18 試合エクスポート機能
-
-抽出された試合データをエクスポートできるボタンを追加する。
-
-目的
-
-・Googleカレンダー以外でも利用可能  
-・CSV保存  
-・ICSカレンダーファイル生成  
-
----
-
-### UI
-
-```
-試合抽出
-↓
-抽出結果テーブル表示
-↓
-[試合エクスポート]
-```
-
----
-
-### エクスポート形式
-
-#### CSV
-
-```
-date,time,teamA,teamB,location
-2026-04-05,09:30,新潟四十雀60,NFC60,
-2026-04-05,11:50,M.sea60,ピュアーズ60,
-```
-
----
-
-#### ICS（カレンダーファイル）
-
-Googleカレンダー  
-Appleカレンダー  
-Outlook  
-
-にインポート可能
-
-例
-
-```
-BEGIN:VEVENT
-SUMMARY:サッカー試合
-DTSTART:20260405T093000
-DTEND:20260405T113000
-DESCRIPTION:新潟四十雀60 vs NFC60
-END:VEVENT
-```
-
----
-
-### Streamlit UI
-
-```
-st.download_button(
-   "CSVエクスポート",
-   csv_data
-)
-```
-
-```
-st.download_button(
-   "ICSエクスポート",
-   ics_data
-)
-```
-
----
-
-# 19 PDF構造デバッグ機能
-
-日程テーブルが抽出できない場合  
-PDF内部の構造を確認できる機能を追加する。
-
-目的
-
-・PDF構造確認  
-・テキスト抽出の調整  
-・正規表現の修正  
-
----
-
-## デバッグモード
-
-UIにチェックボックスを追加
-
-```
-[ ] PDFデバッグモード
-```
-
-ONにすると以下を表示する。
-
----
-
-## 表示内容
-
-### 1 PDF全テキスト
-
-PDFから抽出したテキストをそのまま表示
-
-```
-st.text_area(
-    "PDF抽出テキスト",
-    extracted_text
-)
-```
-
-これにより
-
-```
-改行
-スペース
-文字崩れ
-```
-
-を確認できる。
-
----
-
-### 2 行単位表示
-
-PDFテキストを行単位で表示
-
-例
-
-```
-1: 4月5日
-2: 9時～17時
-3: 1 9:30 新潟四十雀60 × NFC60
-4: 2 10:40 PRSフューチャーズ × SF長岡60
-```
-
-Streamlit
-
-```
-for i,line in enumerate(lines):
-    st.write(i,line)
-```
-
----
-
-### 3 PDF要素確認
-
-pdfplumberでページ要素を確認
-
-表示可能な要素
-
-```
-text
-rect
-line
-curve
-char
-```
-
-例
-
-```
-with pdfplumber.open(file) as pdf:
-    page = pdf.pages[0]
-    st.write(page.objects)
-```
-
-これにより
-
-```
-テキストPDF
-画像PDF
-```
-
-か判定できる。
-
----
-
-### 4 文字座標確認
-
-PDFの文字座標を表示
-
-```
-page.chars
-```
-
-例
-
-```
-text: 新
-x0: 120
-y0: 540
-```
-
-これにより
-
-```
-表形式
-座標ベース
-```
-
-か判断できる。
-
----
-
-# 20 OCR判定
-
-もし
-
-```
-page.extract_text() == None
-```
-
-の場合
-
-PDFは
-
-```
-画像PDF
-```
-
-である可能性が高い。
-
-その場合
-
-```
-OCRモード
-```
-
-を案内する。
-
----
-
-# 21 PDF解析モード切替
-
-UI
-
-```
-解析モード
-
-○ テキスト解析
-○ OCR解析
-```
-
----
-
-# 22 ログ機能
-
-解析結果をログ保存
-
-```
-logs/pdf_debug.log
-```
-
-保存内容
-
-```
-PDFファイル名
-抽出テキスト
-解析結果
-エラー内容
-```
-
----
-
-# 23 開発者モード
-
-UIに表示
-
-```
-開発者モード
-```
-
-ONにすると
-
-表示される
-
-```
-PDF全テキスト
-行番号
-PDF要素
-抽出結果
-```
-
----
-
-# 24 完成イメージ
-
-```
-PDFアップロード
-↓
-チーム名入力
-↓
-試合抽出
-↓
-結果表示
-
-[Googleカレンダー追加]
-
-[CSVエクスポート]
-
-[ICSエクスポート]
-
-[PDFデバッグモード]
-```
-
----
-
-# 25 この機能のメリット
-
-PDF形式が違っても
-
-```
-自分で解析調整可能
-```
-
-になる。
-
-これは
-
-```
-リーグPDF対応
-```
-
-で非常に重要。
-
-追加
-
-# 追加仕様：試合日程抽出ルール
-
-## 26 試合日程抽出ロジック
-
-PDFから抽出したテキストを行単位で解析し  
-試合日程データを抽出する。
-
----
-
-# 26.1 基本構造
-
-PDFテキストは以下のような構造となる。
-
-```
-1〜2行    タイトルなど
-3〜6行    項目名
-7〜12行   試合日程
-```
-
-例
-
-```
-No. 開始時間 H × A 主審 副審
-```
-
----
-
-# 26.2 試合データ構造
-
-試合データは以下の順序で並ぶ。
-
-```
-No 開始時間 H × A 主審 副審
-```
-
-例
-
-```
-1 9:30 新潟四十雀60 × NFC60 PRSフューチャーズ SF長岡60
-```
-
-抽出データ
-
-|項目|例|
-|---|---|
-No|1|
-開始時間|9:30|
-ホーム|新潟四十雀60|
-アウェイ|NFC60|
-主審|PRSフューチャーズ|
-副審|SF長岡60|
-
----
-
-# 26.3 年代グループ
-
-試合の途中に **年代グループ名** が入る。
-
-例
-
-```
-60
-50A
-50B
-40A
-40B
-40C
-70
-```
-
-この行は **試合データではない。**
-
----
-
-## 年代行の判定条件
-
-以下に一致する場合
-
-```
-^\d{2}[A-Z]?$ 
-```
-
-例
-
-```
-60
-50A
-40B
-70
-```
-
----
-
-## 処理
-
-年代行を検出した場合
-
-```
-current_age_group
-```
-
-を更新する。
-
-例
-
-```
-current_age_group = "60"
-```
-
----
-
-# 26.4 試合行判定
-
-試合行は以下条件を満たす。
-
-```
-先頭が試合番号
-```
-
-正規表現
-
-```
-^\d+\s+\d{1,2}:\d{2}
-```
-
-例
-
-```
-1 9:30 新潟四十雀60 × NFC60 PRSフューチャーズ SF長岡60
-```
-
----
-
-# 26.5 試合行解析
-
-試合行は以下の形式
-
-```
-No 時間 H × A 主審 副審
-```
-
-例
-
-```
-1 9:30 新潟四十雀60 × NFC60 PRSフューチャーズ SF長岡60
-```
-
-解析ルール
-
-```
-No = token[0]
-time = token[1]
-
-home = token[2]
-away = token[4]
-
-referee = token[5]
-assistant = token[6]
-```
-
-※ × は区切り記号
-
----
-
-# 26.6 年代が行頭に入るケース
-
-例
-
-```
-60 2 10:40 PRSフューチャーズ × SF長岡60 Ｍ.sea60 ピュアーズ60
-```
-
-解析
-
-```
-age_group = token[0]
-
-No = token[1]
-time = token[2]
-
-home = token[3]
-away = token[5]
-
-referee = token[6]
-assistant = token[7]
-```
-
----
-
-# 26.7 年代のみ行
-
-例
-
-```
-22: 40A
-```
-
-この場合
-
-```
-current_age_group = 40A
-```
-
-として保存する。
-
----
-
-# 26.8 完成データ構造
-
-```
-match = {
-
-date: "2026-04-12",
-age_group: "50A",
-no: 5,
-time: "14:10",
-
-home: "レジェンド大崎",
-away: "PC ONZ長岡50",
-
-referee: "F.C.bolamigo",
-assistant: "SF長岡50"
-
-}
-```
-
----
-
-# 26.9 抽出アルゴリズム
-
-処理フロー
-
-```
-PDFテキスト取得
-↓
-改行で分割
-↓
-1行ずつ解析
-```
-
----
-
-## 疑似コード
-
-```
-for line in lines:
-
-    if 年代行:
-        current_age_group 更新
-        continue
-
-    if 試合行:
-
-        if 年代付き:
-            age = token[0]
-            no = token[1]
-
-        else:
-            age = current_age_group
-            no = token[0]
-
-        match生成
-```
-
----
-
-# 26.10 出力データ
-
-最終抽出データ
-
-```
-date
-age_group
-no
-time
-home
-away
-referee
-assistant
-```
-
----
-
-# 26.11 例
-
-抽出結果
-
-```
-date: 4/5
-age_group: 60
-no: 1
-time: 9:30
-home: 新潟四十雀60
-away: NFC60
-```
-
-```
-date: 4/5
-age_group: 60
-no: 2
-time: 10:40
-home: PRSフューチャーズ
-away: SF長岡60
-```
-
----
-
-# 26.12 エラー処理
-
-試合行解析失敗時
-
-ログ出力
-
-```
-試合行解析エラー
-line内容
-```
-
-保存
-
-```
-logs/parser_error.log
-```
-
----
-
-# 26.13 デバッグ表示
-
-開発者モードONの場合
-
-表示
-
-```
-行番号
-抽出データ
-年代
-```
-
-例
-
-```
-Line 8
-age=60
-no=2
-time=10:40
-home=PRSフューチャーズ
-away=SF長岡60
-```
-
----
-
-# 26.14 抽出結果
-
-抽出された試合を
-
-```
-table表示
-CSV出力
-Googleカレンダー生成
-```
-
-に利用する。
-
-# 追加仕様：Googleカレンダー登録リンク生成
-
-## 27 カレンダーイベントタイトル
-
-Googleカレンダー登録リンク生成時に  
-イベントタイトルに **対戦カード（H vs A）** を設定する。
-
----
-
-# 27.1 タイトル生成ルール
-
-タイトルは以下の形式とする。
-
-```
-{ホームチーム} vs {アウェイチーム}
-```
-
-例
-
-```
-FCF vs ハマーズ
-```
-
----
-
-# 27.2 GoogleカレンダーURL
-
-生成URL
-
-```
-https://calendar.google.com/calendar/render?action=TEMPLATE
-```
-
-パラメータ
-
-|パラメータ|内容|
-|---|---|
-text|イベントタイトル|
-dates|開始終了日時|
-location|会場|
-details|試合詳細|
-
----
-
-# 27.3 タイトル設定
-
-```
-text = "{home} vs {away}"
-```
-
-例
-
-```
-FCF vs ハマーズ
-```
-
----
-
-# 27.4 説明（details）
-
-説明には試合情報を記載
-
-```
-年代: {age_group}
-試合番号: {no}
-主審: {referee}
-副審: {assistant}
-```
-
-例
-
-```
-年代: 50A
-試合番号: 5
-主審: F.C.bolamigo
-副審: SF長岡50
-```
-
----
-
-# 27.5 日時
-
-開始時間
-
-```
-{date} {time}
-```
-
-終了時間
-
-```
-開始 + 120分
-```
-
-例
-
-```
-開始: 20260405T093000
-終了: 20260405T113000
-```
-
----
-
-# 27.6 生成URL例
-
-例
-
-```
-https://calendar.google.com/calendar/render?action=TEMPLATE
-&text=FCF%20vs%20ハマーズ
-&dates=20260412T142000/20260412T162000
-&location=アルビレッジ
-&details=年代%3A50A%0A主審%3AF.C.bolamigo%0A副審%3ASF長岡50
-```
-
----
-
-# 27.7 URLエンコード
-
-GoogleカレンダーURLでは  
-日本語・スペースをURLエンコードする。
-
-例
-
-```
-FCF vs ハマーズ
-```
-
-↓
-
-```
-FCF%20vs%20ハマーズ
-```
-
----
-
-# 27.8 Streamlit UI
-
-抽出された試合ごとに  
-カレンダー登録リンクを生成する。
-
-例
-
-```
-[カレンダー登録]
-FCF vs ハマーズ
-```
-
----
-
-# 27.9 複数試合対応
-
-試合ごとにリンク生成
-
-例
-
-|試合|登録|
-|---|---|
-FCF vs ハマーズ|登録|
-新潟四十雀60 vs NFC60|登録|
-PRSフューチャーズ vs SF長岡60|登録|
-
----
-
-# 27.10 出力データ
-
-リンク生成時に使用するデータ
-
-```
-date
-time
-age_group
-home
-away
-referee
-assistant
-location
-```
-
----
-
-# 27.11 完成動作
-
-```
-PDFアップロード
-↓
-試合抽出
-↓
-自チーム試合フィルタ
-↓
-試合表示
-↓
-Googleカレンダー登録リンク生成
-```
-
----
-
-# 27.12 完成例
-
-カレンダー登録後
-
-```
-タイトル
-
-FCF vs ハマーズ
-```
-
-カレンダーを見たときに
-
-```
-どの試合か一目で分かる
-```
-
-# 28 チーム名解析修正
-
-チーム名にスペースを含む場合があるため  
-単純なスペース分割による解析は禁止する。
-
-例
-
-```
-FC revoltijo
-```
-
----
-
-# 28.1 試合行解析方法
-
-試合行は以下形式
-
-```
-No 時間 H × A 主審 副審
-```
-
-例
-
-```
-6 14:20 FCF × ハマーズ FC revoltijo ナオネスターズ上越40
-```
-
----
-
-# 28.2 解析手順
-
-① No と 時間を取得
-
-② 残り文字列を取得
-
-③ `×` を基準に分割
-
----
-
-# 28.3 解析例
-
-入力
-
-```
-6 14:20 FCF × ハマーズ FC revoltijo ナオネスターズ上越40
-```
-
-処理
-
-```
-No = 6
-time = 14:20
-
-rest =
-FCF × ハマーズ FC revoltijo ナオネスターズ上越40
-```
-
----
-
-### ホーム / アウェイ分割
-
-```
-home_part, rest_part = rest.split("×")
-```
-
-結果
-
-```
-home = "FCF"
-rest_part = "ハマーズ FC revoltijo ナオネスターズ上越40"
-```
-
----
-
-### 審判分割
-
-後ろ2チームが審判
-
-```
-tokens = rest_part.split()
-```
-
-例
-
-```
-["ハマーズ", "FC", "revoltijo", "ナオネスターズ上越40"]
-```
-
----
-
-### 審判
-
-```
-assistant = tokens[-1]
-referee = " ".join(tokens[-3:-1])
-```
-
-結果
-
-```
-referee = FC revoltijo
-assistant = ナオネスターズ上越40
-```
-
----
-
-### アウェイ
-
-```
-away = " ".join(tokens[:-3])
-```
-
-結果
-
-```
-away = ハマーズ
-```
-
----
-
-# 28.4 最終結果
-
-```
-No: 6
-time: 14:20
-home: FCF
-away: ハマーズ
-referee: FC revoltijo
-assistant: ナオネスターズ上越40
-```
-
----
-
-# 28.5 対応できるケース
-
-この方式で以下すべて対応可能
-
-```
-FC revoltijo
-JS CLASSIC
-M.sea新潟
-新潟四十雀シニア
-```
-
----
-
-# 28.6 解析優先順位
-
-```
-1 × でチーム区切り
-2 後ろ2チームを審判
-3 残りをアウェイ
-```
-
-# 追加仕様：チーム名例外処理（FC revoltijo対応）
-
-## 29 目的
-
-チーム名
-
-```
-FC revoltijo
-```
-
-がスペース分割によって
-
-```
-FC
-revoltijo
-```
-
-と分割されてしまう問題を修正する。
-
-また、この分割により  
-審判・副審の位置がずれる問題にも対応する。
-
----
-
-# 29.1 基本方針
-
-基本の解析ロジックは変更しない。
-
-```
-No 時間 H × A 主審 副審
-```
-
-スペース分割で解析する。
-
-ただし  
-特定チーム名のみ例外処理を行う。
-
----
-
-# 29.2 例外チーム辞書
-
-例外チームを辞書として定義する。
-
-```
-SPECIAL_TEAM_NAMES = [
-    "FC revoltijo"
-]
-```
-
----
-
-# 29.3 前処理
-
-行解析の前に  
-例外チーム名を **結合表記へ変換**する。
-
-例
-
-```
-FC revoltijo
-```
-
-↓
-
-```
-FC_revoltijo
-```
-
-処理
-
-```
-line = line.replace("FC revoltijo", "FC_revoltijo")
-```
-
----
-
-# 29.4 トークン解析
-
-その後通常のスペース分割を行う。
-
-```
-tokens = line.split()
-```
-
-例
-
-```
-6 14:20 FCF × ハマーズ FC_revoltijo ナオネスターズ上越40
-```
-
-結果
-
-```
-[
-"6",
-"14:20",
-"FCF",
-"×",
-"ハマーズ",
-"FC_revoltijo",
-"ナオネスターズ上越40"
-]
-```
-
----
-
-# 29.5 チーム名復元
-
-解析後  
-元のチーム名に戻す。
-
-```
-name.replace("_", " ")
-```
-
-例
-
-```
-FC_revoltijo
-```
-
-↓
-
-```
-FC revoltijo
-```
-
----
-
-# 29.6 解析結果
-
-例
-
-入力
-
-```
-6 14:20 FCF × ハマーズ FC revoltijo ナオネスターズ上越40
-```
-
-抽出結果
-
-```
-No: 6
-time: 14:20
-home: FCF
-away: ハマーズ
-referee: FC revoltijo
-assistant: ナオネスターズ上越40
-```
-
----
-
-# 29.7 後続データの補正
-
-スペース分割のズレにより  
-審判・副審の位置が崩れていた可能性がある。
-
-そのため以下ルールを適用する。
-
-```
-tokens[-2] = referee
-tokens[-1] = assistant
-```
-
----
-
-# 29.8 安全処理
-
-試合行トークン数が不足する場合
-
-```
-len(tokens) < 7
-```
-
-ログ出力
-
-```
-試合解析エラー
-```
-
-ログ保存
-
-```
-logs/parser_error.log
-```
-
----
-
-# 29.9 将来拡張
-
-他にもスペースを含むチーム名が発生した場合  
-辞書に追加する。
-
-例
-
-```
-SPECIAL_TEAM_NAMES = [
-"FC revoltijo",
-"fc ziarllo"
-]
-```
-
----
-
-# 29.10 完成動作
-
-```
-PDF解析
-↓
-例外チーム名置換
-↓
-スペース分割
-↓
-試合解析
-↓
-チーム名復元
-```
-
-これにより
-
-```
-FC revoltijo
-```
-
-を正しく解析できる。
-
-# 追加仕様：開催日・会場の取得
-
-## 30 目的
-
-試合データに **会場情報** を追加する。
-
-PDF内には試合ブロックの前に  
-開催日と会場が記載されている。
-
-例
-
-```
-開催日： 4月5日 会場：潟東サルビアサッカー場
-```
-
-この情報を取得し  
-以降の試合データに紐付ける。
-
----
-
-# 30.1 取得対象
-
-取得する情報
-
-|項目|例|
-|---|---|
-date|4月5日|
-location|潟東サルビアサッカー場|
-
----
-
-# 30.2 ヘッダー行判定
-
-以下の文字列を含む行を検出する。
-
-```
-開催日：
-```
-
-かつ
-
-```
-会場：
-```
-
----
-
-# 30.3 正規表現
-
-```
-開催日：\s*(\d+月\d+日)\s*会場：(.+)
-```
-
-取得
-
-```
-group1 = 日付
-group2 = 会場
-```
-
-例
-
-入力
-
-```
-開催日： 4月5日 会場：潟東サルビアサッカー場
-```
-
-抽出
-
-```
-date = 4月5日
-location = 潟東サルビアサッカー場
-```
-
----
-
-# 30.4 内部状態
-
-現在の試合グループ情報として保存
-
-```
-current_date
-current_location
-```
-
-例
-
-```
-current_date = "2026-04-05"
-current_location = "潟東サルビアサッカー場"
-```
-
----
-
-# 30.5 試合データへの適用
-
-試合行解析時に  
-現在の情報を追加する。
-
-```
-match = {
-
-date: current_date,
-location: current_location,
-
-age_group: age_group,
-no: no,
-time: time,
-
-home: home,
-away: away,
-
-referee: referee,
-assistant: assistant
-
-}
-```
-
----
-
-# 30.6 複数会場対応
-
-PDFでは途中で会場が変わる場合がある。
-
-例
-
-```
-開催日： 4月5日 会場：潟東サルビアサッカー場
-(試合データ)
-
-開催日： 4月12日 会場：アルビレッジ
-(試合データ)
-```
-
-その場合
-
-```
-current_date
-current_location
-```
-
-を更新する。
-
----
-
-# 30.7 日付フォーマット
-
-抽出日付
-
-```
-4月5日
-```
-
-を
-
-```
-YYYY-MM-DD
-```
-
-へ変換する。
-
-例
-
-```
-2026-04-05
-```
-
-※年はPDFタイトルから取得
-
-```
-2026年 新潟県シニアサッカー日程表
-```
-
----
-
-# 30.8 Googleカレンダーへの反映
-
-会場は
-
-```
-location
-```
-
-として登録する。
-
-例
-
-```
-潟東サルビアサッカー場
-```
-
----
-
-# 30.9 CSV出力
-
-CSVに以下項目を追加
-
-```
-date
-location
-age_group
-no
-time
-home
-away
-referee
-assistant
-```
-
-例
-
-```
-2026-04-05,潟東サルビアサッカー場,60,1,09:30,新潟四十雀60,NFC60,PRSフューチャーズ,SF長岡60
-```
-
----
-
-# 30.10 デバッグ表示
-
-開発者モードON時
-
-表示
-
-```
-current_date
-current_location
-```
-
-例
-
-```
-DATE = 2026-04-05
-LOCATION = 潟東サルビアサッカー場
-```
-
----
-
-# 30.11 完成動作
-
-```
-PDF読み込み
-↓
-開催日行検出
-↓
-current_date 更新
-
-会場行検出
-↓
-current_location 更新
-
-試合行
-↓
-試合データ生成
-↓
-date/location付与
-```
-
----
-
-# 30.12 最終データ構造
-
-```
-match = {
-
-date: "2026-04-05",
-location: "潟東サルビアサッカー場",
-
-age_group: "60",
-no: 1,
-time: "9:30",
-
-home: "新潟四十雀60",
-away: "NFC60",
-
-referee: "PRSフューチャーズ",
-assistant: "SF長岡60"
-
-}
-```
+サッカー日程PDFから  
+**簡単にGoogleカレンダーへ登録できるUI**

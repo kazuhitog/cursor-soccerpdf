@@ -15,11 +15,52 @@ HEADER_LINE_PATTERN = re.compile(r"開催日：\s*(\d+月\d+日)\s*会場：(.+)
 AGE_GROUP_PATTERN = re.compile(r"^\d{2}[A-Z]?$")
 MATCH_HEAD_PATTERN = re.compile(r"^\d+\s+\d{1,2}:\d{2}")
 
-# 例外チーム名（スペースを含むチーム名は事前に結合しておく）
-SPECIAL_TEAM_NAMES = [
+# 例外チーム名（スペースを含むチーム名）。ファイルが無い場合のデフォルト。
+DEFAULT_SPECIAL_TEAM_NAMES = [
     "FC revoltijo",
     "fc ziarllo",
+    "Regalis F.C",
 ]
+
+# モジュールの親 = project/
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+SPECIAL_TEAM_NAMES_FILE = PROJECT_DIR / "data" / "special_team_names.txt"
+
+
+def get_special_team_names_path() -> Path:
+    """特殊チーム名一覧ファイルのパスを返す。"""
+    return SPECIAL_TEAM_NAMES_FILE
+
+
+def load_special_team_names() -> List[str]:
+    """
+    特殊チーム名をファイルから読み込む。
+    ファイルが無いか空の場合は DEFAULT_SPECIAL_TEAM_NAMES を返す。
+    """
+    if not SPECIAL_TEAM_NAMES_FILE.exists():
+        return list(DEFAULT_SPECIAL_TEAM_NAMES)
+    lines = SPECIAL_TEAM_NAMES_FILE.read_text(encoding="utf-8").strip().splitlines()
+    names = [s.strip() for s in lines if s.strip()]
+    return names if names else list(DEFAULT_SPECIAL_TEAM_NAMES)
+
+
+def save_special_team_names(names: List[str]) -> None:
+    """特殊チーム名一覧をファイルに保存する。"""
+    SPECIAL_TEAM_NAMES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SPECIAL_TEAM_NAMES_FILE.write_text("\n".join(names), encoding="utf-8")
+
+
+def _apply_special_team_join(line: str, names: List[str] | None = None) -> str:
+    """
+    例外チーム名を一時的に「スペースなし表記」に変換する。
+    names が None の場合は load_special_team_names() を使用。
+    """
+    if names is None:
+        names = load_special_team_names()
+    for name in names:
+        joined = name.replace(" ", "_")
+        line = line.replace(name, joined)
+    return line
 
 
 @dataclass
@@ -84,17 +125,6 @@ def _log_parse_error(line: str) -> None:
         logger.exception("試合行解析エラーのログ出力に失敗しました")
 
 
-def _apply_special_team_join(line: str) -> str:
-    """
-    例外チーム名を一時的に「スペースなし表記」に変換する。
-    例: 'FC revoltijo' -> 'FC_revoltijo'
-    """
-    for name in SPECIAL_TEAM_NAMES:
-        joined = name.replace(" ", "_")
-        line = line.replace(name, joined)
-    return line
-
-
 def _restore_special_team_name(name: str) -> str:
     """
     結合表記を元のスペースあり表記に戻す。
@@ -106,7 +136,9 @@ def _restore_special_team_name(name: str) -> str:
 def parse_matches_from_lines(lines: Iterable[str], year: int | None = None) -> List[Match]:
     """
     PDF から取得した行リストをもとに、日付ブロック＋試合行を解析して Match リストを返す。
+    特殊チーム名は data/special_team_names.txt から読み込む。
     """
+    special_names = load_special_team_names()
     # 行列化しておく（年検出などで複数回走査するため）
     line_list = list(lines)
 
@@ -151,7 +183,7 @@ def parse_matches_from_lines(lines: Iterable[str], year: int | None = None) -> L
             continue
 
         # 例外チーム名を結合した上でトークン化
-        line = _apply_special_team_join(original)
+        line = _apply_special_team_join(original, special_names)
 
         # 年代のみ行（例: "60", "50A", "22: 40A"）
         tokens = line.replace("：", ":").split()
@@ -230,5 +262,12 @@ def filter_matches_by_team(matches: Iterable[Match], team_name: str) -> List[Mat
     return result
 
 
-__all__ = ["Match", "parse_matches_from_lines", "filter_matches_by_team"]
+__all__ = [
+    "Match",
+    "parse_matches_from_lines",
+    "filter_matches_by_team",
+    "load_special_team_names",
+    "save_special_team_names",
+    "get_special_team_names_path",
+]
 

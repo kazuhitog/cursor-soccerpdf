@@ -13,3 +13,9 @@
 2026-03-09 20:56:42,184 [INFO] modules.pdf_parser: 必要カラムが不足しています: date,match,time
 2026-03-09 20:56:44,040 [INFO] modules.pdf_parser: 必要カラムが不足しています: date,match,time
 2026-03-09 20:56:44,041 [WARNING] modules.pdf_parser: 日程テーブルを検出できません
+2026-03-10 08:35:17,762 [INFO] modules.pdf_parser: 必要カラムが不足しています: date,match,time
+2026-03-10 08:35:19,523 [INFO] modules.pdf_parser: 必要カラムが不足しています: date,match,time
+2026-03-10 08:35:19,523 [WARNING] modules.pdf_parser: 日程テーブルを検出できません
+2026-03-10 09:47:59,712 [INFO] modules.pdf_parser: 必要カラムが不足しています: date,match,time
+2026-03-10 09:48:01,881 [INFO] modules.pdf_parser: 必要カラムが不足しています: date,match,time
+2026-03-10 09:48:01,882 [WARNING] modules.pdf_parser: 日程テーブルを検出できません

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import traceback
 from pathlib import Path
 from typing import List
 
@@ -11,8 +12,18 @@ from modules.pdf_reader import read_pdf_lines
 from modules.match_parser import (
     parse_matches_from_lines,
     filter_matches_by_team,
+    load_special_team_names,
+    save_special_team_names,
+    get_special_team_names_path,
 )
 from modules.calendar_link import build_google_calendar_url
+from modules.google_calendar_api import (
+    get_credentials_path,
+    list_calendars,
+    insert_events,
+    get_credentials,
+    NeedUserToClickAuthLinkError,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -43,13 +54,44 @@ def main() -> None:
 
     st.markdown("PDFからテキストを解析し、**自チームの試合だけ** を抽出して Google カレンダーリンクやエクスポートデータを生成します。")
 
-    # ① チーム名入力
-    st.header("① チーム名入力")
-    team_name = st.text_input("チーム名を入力してください（例: ハマーズ）", value="ハマーズ")
+    # チーム名とPDFアップロードを横並び
+    col1, col2 = st.columns(2)
+    with col1:
+        team_name = st.text_input("チーム名", value="ハマーズ", placeholder="例: ハマーズ")
+    with col2:
+        uploaded_file = st.file_uploader("試合日程PDF", type=["pdf"])
 
-    # ② PDFアップロード
-    st.header("② PDFアップロード")
-    uploaded_file = st.file_uploader("試合日程PDF", type=["pdf"])
+    # 特殊チーム名一覧（追加・削除）
+    st.subheader("特殊チーム名")
+    st.caption("スペースを含むチーム名を登録すると、PDF解析で正しく認識されます。")
+    special_names = load_special_team_names()
+    add_col, _ = st.columns([2, 4])
+    with add_col:
+        new_name = st.text_input("追加するチーム名", placeholder="例: Regalis F.C", key="new_special_team")
+        if st.button("追加"):
+            name_stripped = (new_name or "").strip()
+            if name_stripped and name_stripped not in special_names:
+                special_names.append(name_stripped)
+                save_special_team_names(special_names)
+                st.success(f"「{name_stripped}」を追加しました。")
+                st.rerun()
+            elif name_stripped in special_names:
+                st.warning("すでに登録されています。")
+            else:
+                st.warning("チーム名を入力してください。")
+    if special_names:
+        st.markdown("**登録一覧**")
+        for i, name in enumerate(special_names):
+            del_col1, del_col2 = st.columns([1, 5])
+            with del_col1:
+                if st.button("削除", key=f"del_special_{i}"):
+                    special_names.pop(i)
+                    save_special_team_names(special_names)
+                    st.rerun()
+            with del_col2:
+                st.text(name)
+    else:
+        st.info("登録がありません。上の入力欄から追加してください。")
 
     if not uploaded_file:
         st.info("PDFをアップロードしてください。")
@@ -72,6 +114,8 @@ def main() -> None:
         st.session_state.matches_all = None
         st.session_state.filtered_matches = None
         st.session_state.df_team = None
+    if "google_logged_in" not in st.session_state:
+        st.session_state.google_logged_in = False
 
     # 解析ボタン
     extract_clicked = st.button("試合を抽出する")
@@ -128,12 +172,9 @@ def main() -> None:
         for i, line in enumerate(lines, start=1):
             st.write(f"{i}: {line}")
 
-    # DataFrame 化（全試合表示用）
+    # 全試合データ用のDataFrame（末尾のアコーディオンで表示）
     all_dicts: List[dict] = [m.to_dict() for m in matches_all]
     df_all = pd.DataFrame(all_dicts)
-
-    st.header("③ 抽出結果（全試合）")
-    st.dataframe(df_all, use_container_width=True)
 
     # 開発者モード用の抽出結果詳細
     if dev_mode and matches_all:
@@ -149,8 +190,8 @@ def main() -> None:
                 f"location={m.location}"
             )
 
-    # チーム名フィルタ結果
-    st.header("④ 自チーム試合のみ表示")
+    # 自チーム試合一覧
+    st.subheader("自チーム試合一覧")
     if not filtered:
         st.info(f"「{team_name}」が含まれる試合は見つかりませんでした。")
         return
@@ -158,7 +199,7 @@ def main() -> None:
     st.dataframe(df_team, use_container_width=True)
 
     # Google カレンダーリンク生成
-    st.header("⑤ Googleカレンダーリンク生成")
+    st.subheader("Googleカレンダーリンク生成")
 
     if st.button("カレンダー追加リンク生成"):
         links = []
@@ -180,8 +221,91 @@ def main() -> None:
             label = f"{item['date']} {item['time']}  {item['match']}"
             st.markdown(f"- [{label}]({item['link']})")
 
-    # エクスポート機能
-    st.header("⑥ 試合エクスポート")
+    # Googleカレンダーへ自動登録
+    st.subheader("Googleカレンダーへ自動登録")
+    creds_path = get_credentials_path()
+    if not creds_path:
+        st.info(
+            "自動登録を使うには、Google Cloud Console で OAuth クライアント（デスクトップ）を作成し、"
+            "**credentials.json** を `project/` に保存してください。"
+        )
+    else:
+        if "google_calendars" not in st.session_state:
+            st.session_state.google_calendars = None
+
+        show_google_debug = st.checkbox("Google認証のデバッグ表示", value=False, key="google_debug")
+
+        # 未ログイン: ボタン表示 / ログイン済み: 状態表示 + ログアウト
+        if not st.session_state.google_logged_in:
+            if st.button("Googleでログイン"):
+                try:
+                    with st.status("Googleログイン処理中...", expanded=True) as status:
+                        st.info("ブラウザが別タブで開いたら、Googleでログインし「許可」をクリックしてください。開かない場合は下のリンクをクリックしてください。")
+                        if show_google_debug:
+                            st.write("① 認証ファイルを確認しています...")
+                        get_credentials(auth_url_callback=lambda url: None)
+                        if show_google_debug:
+                            st.write("② 認証完了。カレンダー一覧を取得しています...")
+                        cal_list = list_calendars()
+                        st.session_state.google_calendars = cal_list
+                        st.session_state.google_logged_in = True
+                        status.update(label="完了", state="complete", expanded=False)
+                    st.success("Googleログイン成功。登録先カレンダーを選んで「試合をカレンダー登録」を押してください。")
+                except NeedUserToClickAuthLinkError as e:
+                    st.warning("ブラウザが自動で開かないため、以下のリンクを**新しいタブで開いて**Googleでログイン・許可してください。")
+                    st.markdown(f"[**▶ ここをクリックしてGoogleでログイン**]({e.auth_url})")
+                    st.caption("認証が完了したら「認証完了しました」と出るページになります。そのタブを閉じて、もう一度「Googleでログイン」ボタンを押してください。")
+                    st.info("※ Google Cloud Console の OAuth クライアントに「リダイレクトURI」として **http://localhost:8080/** を追加してください。")
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"ログインに失敗しました: {e}")
+                    with st.expander("エラー詳細（デバッグ用）", expanded=True):
+                        st.code(traceback.format_exc(), language="text")
+                    if show_google_debug:
+                        log_path = BASE_DIR / "logs" / "google_calendar.log"
+                        if log_path.exists():
+                            st.text("直近のログ (logs/google_calendar.log):")
+                            st.code(log_path.read_text(encoding="utf-8")[-4000:], language="text")
+        else:
+            # ログイン済み: Googleアイコン + 状態表示 + ログアウト
+            icon_col, text_col = st.columns([1, 8])
+            with icon_col:
+                st.image("https://www.google.com/favicon.ico", width=24)
+            with text_col:
+                st.markdown("**🟢 Googleログイン済み**")
+            if st.button("ログアウト"):
+                st.session_state.google_logged_in = False
+                st.session_state.google_calendars = None
+                st.rerun()
+
+        calendars = st.session_state.google_calendars
+        if calendars:
+            options = [f"{c['summary']} ({'メイン' if c['primary'] else ''})" for c in calendars]
+            calendar_ids = [c["id"] for c in calendars]
+            idx = 0
+            for i, c in enumerate(calendars):
+                if c.get("primary"):
+                    idx = i
+                    break
+            choice = st.selectbox("登録カレンダー", range(len(options)), format_func=lambda i: options[i], index=idx)
+            calendar_id = calendar_ids[choice]
+            if st.button("試合をカレンダー登録"):
+                success, errs = insert_events(calendar_id, filtered)
+                if errs:
+                    st.error("登録失敗: " + "; ".join(errs[:3]) + (" ..." if len(errs) > 3 else ""))
+                if success:
+                    st.success(f"登録完了: {success} 件")
+        elif st.session_state.google_calendars is not None and len(st.session_state.google_calendars) == 0:
+            st.warning("カレンダーが取得できませんでした。")
+
+        # デバッグ: ログファイルの末尾を常に表示可能に
+        if creds_path and show_google_debug:
+            log_path = BASE_DIR / "logs" / "google_calendar.log"
+            if log_path.exists():
+                with st.expander("デバッグ: google_calendar.log の内容"):
+                    st.code(log_path.read_text(encoding="utf-8")[-3000:], language="text")
+
+    # 試合エクスポート
+    st.subheader("試合エクスポート")
 
     # CSV
     csv_data = df_team.to_csv(index=False)
@@ -216,6 +340,10 @@ def main() -> None:
         file_name="matches.ics",
         mime="text/calendar",
     )
+
+    # 全試合データ（折りたたみ）
+    with st.expander("全試合データ", expanded=False):
+        st.dataframe(df_all, use_container_width=True)
 
 
 if __name__ == "__main__":
