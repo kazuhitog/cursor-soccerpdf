@@ -1,7 +1,19 @@
 # サッカー試合PDF → Googleカレンダー ツール 仕様書
 
-**この README のみから、同一構成のファイルを再生成できる** ことを目的とする。  
-本文は仕様の説明、**付録 A** に各ファイルのパスと完全な内容を記載する。
+**この README を読み込むだけで、同じ構成・同じアプリを再現して起動できる** ことを目的とする。  
+本文で仕様を説明し、**付録 A** に各ファイルのパスと完全な内容を記載する。付録のコードブロックを指定パスに保存し、**付録 B** の手順で起動する。
+
+---
+
+## 追加仕様のまとめ（これまでに取り込んだ仕様）
+
+| 項目 | 内容 |
+|------|------|
+| **リポジトリ構成** | アプリは `project/` のみ。ルート直下の旧アプリは廃止。 |
+| **UI 改善** | チーム名と PDF アップロードを横並び。セクション番号削除。全試合データはアコーディオン表示。Google ログイン状態表示・ログアウト・アイコン。 |
+| **特殊チーム名** | `data/special_team_names.txt` で 1 行 1 件管理。ダッシュボードで一覧・追加・削除。 |
+| **credentials の切り替え** | ローカル: `credentials.json` / `token.json`。本番: `credentials_production.json` または `client_secret_*.json`、`token_production.json`。環境変数 `GOOGLE_CREDENTIALS_FILE` / `GOOGLE_TOKEN_FILE` で明示指定可。`STREAMLIT_SERVER_RUNNING` または `USE_PRODUCTION_CREDENTIALS=1` で本番用ファイルを自動参照。 |
+| **Google OAuth ローカル / Streamlit Cloud 両対応** | 認証情報の優先順位: 1) **Streamlit Secrets**（`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`）。ローカルは `.streamlit/secrets.toml`、Cloud は App Settings → Secrets。2) 上記 credentials ファイル。OAuth 秘密鍵は GitHub に保存しない（.gitignore で除外）。 |
 
 ---
 
@@ -33,6 +45,9 @@ cursor_soccerPDF/
     ├── app.py
     ├── requirements.txt
     ├── .gitignore
+    ├── .streamlit/
+    │   ├── secrets.toml.example   # コピーして secrets.toml にし、値を設定（git 管理しない）
+    │   └── secrets.toml           # ローカル用 OAuth（GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET）
     ├── modules/
     │   ├── pdf_reader.py
     │   ├── match_parser.py
@@ -48,13 +63,15 @@ cursor_soccerPDF/
         └── google_calendar.log
 ```
 
-- **credentials / token（ローカルと本番の切り替え）**
-  - **ローカル**: `project/credentials.json` と `project/token.json` を配置（git 管理しない）。
-  - **本番（Streamlit Cloud など）**: 次のいずれかで本番用を使う。
-    1. **ファイル名で自動切り替え**: 本番環境では `STREAMLIT_SERVER_RUNNING` が立つため、`credentials_production.json` または `client_secret_*.json`（例: `client_secret_842291968491-....apps.googleusercontent.com.json`）を `project/` に置くとそちらを参照する。token は `token_production.json`。
-    2. **環境変数で明示指定**: `GOOGLE_CREDENTIALS_FILE` に credentials のパス、`GOOGLE_TOKEN_FILE` に token のパスを指定する。Streamlit Cloud の「Advanced settings」→ Secrets や環境変数で設定する。
-    3. **本番モードの強制**: ローカルでも本番用を使う場合は `USE_PRODUCTION_CREDENTIALS=1` を設定する。
-  - 本番用ファイル（`credentials_production.json`, `token_production.json`, `client_secret_*.json`）は .gitignore 済み。
+- **認証情報（同一アプリでローカル・本番両方対応）**
+  - **優先 1: Streamlit Secrets**  
+    ローカル: `project/.streamlit/secrets.toml` に `GOOGLE_CLIENT_ID` と `GOOGLE_CLIENT_SECRET` を記載（`secrets.toml.example` をコピーして編集）。  
+    Streamlit Cloud: App Settings → Secrets に同じキーで登録。  
+    これがあると credentials ファイルは不要。
+  - **優先 2: credentials ファイル**  
+    ローカル: `project/credentials.json` と `project/token.json`。  
+    本番: `STREAMLIT_SERVER_RUNNING` や `USE_PRODUCTION_CREDENTIALS=1` のときは `credentials_production.json` または `client_secret_*.json`、token は `token_production.json`。環境変数 `GOOGLE_CREDENTIALS_FILE` / `GOOGLE_TOKEN_FILE` でパス指定も可。
+  - 上記いずれも .gitignore で除外し、GitHub に上げない。
 
 ---
 
@@ -109,9 +126,10 @@ PDFアップロード
   - 解析エラーは `logs/parser_error.log` に追記。
 - **calendar_link.py**: `build_google_calendar_url(match)`。`https://calendar.google.com/calendar/render` に `action=TEMPLATE`, `text`, `dates`, `location`, `details` を URL エンコードして付与。
 - **google_calendar_api.py**:  
-  - 認証: `project/credentials.json` / `project/token.json`。スコープは `calendar.readonly` と `calendar.events`。  
+  - 認証の優先順位: 1) **Streamlit Secrets**（`st.secrets["GOOGLE_CLIENT_ID"]`, `GOOGLE_CLIENT_SECRET` があれば `from_client_config` でフロー作成）。2) credentials ファイル（ローカルは `credentials.json`、本番は `credentials_production.json` または `client_secret_*.json`。環境変数 `GOOGLE_CREDENTIALS_FILE` / `GOOGLE_TOKEN_FILE` でパス指定可）。token は `token.json` / `token_production.json` または `GOOGLE_TOKEN_FILE`。  
+  - スコープ: `calendar.readonly`, `calendar.events`。  
   - 初回認証: 固定ポート 8080、リダイレクト URI `http://localhost:8080/`。認証 URL をアプリ内表示用に `NeedUserToClickAuthLinkError(auth_url)` を raise。  
-  - `get_credentials_path()`, `get_credentials(auth_url_callback=None)`, `list_calendars()`, `insert_events(calendar_id, matches)`。  
+  - `get_credentials_path()`（Secrets 利用時は `.streamlit/secrets.toml` のパスを返す）, `get_credentials(auth_url_callback=None)`, `list_calendars()`, `insert_events(calendar_id, matches)`。  
   - イベント body: summary=`{teamA} vs {teamB}`, location, description（年代・試合番号・主審・副審）、start/end は dateTime + timeZone: Asia/Tokyo。  
   - ログ: `logs/google_calendar.log`。
 
@@ -131,7 +149,7 @@ PDFアップロード
 ## 9 ログ・セキュリティ
 
 - ログ: `logs/app.log`, `logs/parser_error.log`, `logs/pdf_debug.log`, `logs/google_calendar.log`
-- **.gitignore**: `credentials.json`, `token.json` を必ず含める。
+- **.gitignore**（OAuth 秘密鍵を GitHub に上げない）: `credentials.json`, `token.json`, `credentials_production.json`, `token_production.json`, `client_secret_*.json`, `.streamlit/secrets.toml`, `__pycache__/`, `logs/`, `data/pdf/`, `.env`, `.DS_Store`
 
 ---
 
@@ -141,7 +159,7 @@ PDFアップロード
 - 特殊チーム名のファイル管理とダッシュボードでの追加・削除
 - チーム名フィルタ
 - Google カレンダー追加リンク生成
-- Google ログイン（認証 URL 表示対応）・カレンダー一覧・試合の自動登録・ログアウト
+- Google ログイン（ローカル / Streamlit Cloud 両対応。Secrets または credentials ファイル。認証 URL 表示・ログアウト対応）・カレンダー一覧・試合の自動登録
 - CSV / ICS エクスポート
 - PDF デバッグモード
 - 全試合データのアコーディオン表示
@@ -171,8 +189,29 @@ google-api-python-client
 ### project/.gitignore
 
 ```
+# Python
+__pycache__/
+*.pyc
+
+# Environment
+.env
+
+# Google API
 credentials.json
 token.json
+credentials_production.json
+token_production.json
+client_secret_*.json
+
+# Streamlit Secrets（OAuth 秘密鍵を GitHub に上げない）
+.streamlit/secrets.toml
+
+__pycache__/
+logs/
+data/pdf/
+
+# OS
+.DS_Store
 ```
 
 ---
@@ -185,6 +224,20 @@ token.json
 FC revoltijo
 fc ziarllo
 Regalis F.C
+```
+
+---
+
+### project/.streamlit/secrets.toml.example
+
+このファイルを `secrets.toml` にコピーし、Google Cloud Console で取得した値に書き換える。`secrets.toml` は .gitignore 済み。
+
+```
+# このファイルを secrets.toml にコピーし、値を設定してください。
+# Google Cloud Console で OAuth 2.0 クライアント ID を作成し、クライアント ID とシークレットを取得して記載します。
+
+GOOGLE_CLIENT_ID = "xxxxxxxxxxxx.apps.googleusercontent.com"
+GOOGLE_CLIENT_SECRET = "xxxxxxxxxxxx"
 ```
 
 ---
@@ -485,12 +538,13 @@ __all__ = [
 ```python
 """
 Google Calendar API v3 による OAuth2 認証とイベント登録。
-credentials.json / token.json は project/ 直下に配置する。
+ローカル / Streamlit Cloud 両対応。認証は 1) Streamlit Secrets 2) credentials ファイル。
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from pathlib import Path
 from typing import List, Any
@@ -499,15 +553,64 @@ from .match_parser import Match
 
 logger = logging.getLogger(__name__)
 PROJECT_DIR = Path(__file__).resolve().parents[1]
-TOKEN_PATH = PROJECT_DIR / "token.json"
+
+
+def _is_production_mode() -> bool:
+    return (
+        os.environ.get("STREAMLIT_SERVER_RUNNING") == "true"
+        or os.environ.get("USE_PRODUCTION_CREDENTIALS", "").strip().lower() in ("1", "true", "yes")
+    )
 
 
 def _find_credentials_file() -> Path | None:
+    env_path = os.environ.get("GOOGLE_CREDENTIALS_FILE", "").strip()
+    if env_path:
+        p = Path(env_path)
+        if not p.is_absolute():
+            p = PROJECT_DIR / p
+        return p if p.exists() else None
+    if _is_production_mode():
+        prod = PROJECT_DIR / "credentials_production.json"
+        if prod.exists():
+            return prod
+        for f in sorted(PROJECT_DIR.glob("client_secret_*.json")):
+            return f
+        return prod
     p = PROJECT_DIR / "credentials.json"
     return p if p.exists() else None
 
 
+def _get_token_path() -> Path:
+    env_path = os.environ.get("GOOGLE_TOKEN_FILE", "").strip()
+    if env_path:
+        p = Path(env_path)
+        return p if p.is_absolute() else (PROJECT_DIR / p)
+    if _is_production_mode():
+        return PROJECT_DIR / "token_production.json"
+    return PROJECT_DIR / "token.json"
+
+
+def _get_client_config_from_streamlit_secrets() -> dict | None:
+    try:
+        import streamlit as st
+        if "GOOGLE_CLIENT_ID" in st.secrets and "GOOGLE_CLIENT_SECRET" in st.secrets:
+            return {
+                "installed": {
+                    "client_id": str(st.secrets["GOOGLE_CLIENT_ID"]).strip(),
+                    "client_secret": str(st.secrets["GOOGLE_CLIENT_SECRET"]).strip(),
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "redirect_uris": ["http://localhost"],
+                }
+            }
+    except Exception:
+        pass
+    return None
+
+
 def get_credentials_path() -> Path | None:
+    if _get_client_config_from_streamlit_secrets() is not None:
+        return PROJECT_DIR / ".streamlit" / "secrets.toml"
     return _find_credentials_file()
 
 
@@ -539,6 +642,7 @@ def _get_calendar_logger() -> logging.Logger:
 
 
 def _save_token_from_flow(creds) -> None:
+    token_path = _get_token_path()
     token_data = {
         "token": creds.token,
         "refresh_token": getattr(creds, "refresh_token", None),
@@ -547,7 +651,8 @@ def _save_token_from_flow(creds) -> None:
         "client_secret": creds.client_secret,
         "scopes": list(creds.scopes) if creds.scopes else SCOPES,
     }
-    TOKEN_PATH.write_text(json.dumps(token_data, indent=2), encoding="utf-8")
+    token_path.parent.mkdir(parents=True, exist_ok=True)
+    token_path.write_text(json.dumps(token_data, indent=2), encoding="utf-8")
 
 
 def get_credentials(auth_url_callback=None):
@@ -563,24 +668,33 @@ def get_credentials(auth_url_callback=None):
             "pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client"
         ) from e
 
-    creds_path = _find_credentials_file()
-    if not creds_path:
+    client_config = _get_client_config_from_streamlit_secrets()
+    creds_path = _find_credentials_file() if not client_config else None
+    if not client_config and not creds_path:
         raise FileNotFoundError(
-            "project/ に credentials.json がありません。"
-            "Google Cloud Console で OAuth クライアント（デスクトップ）を作成し、"
-            "credentials.json を project/ に保存してください。"
+            "認証情報がありません。"
+            "ローカル: project/.streamlit/secrets.toml に GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET を書くか、"
+            "project/credentials.json を配置してください。"
+            "Streamlit Cloud: App Settings → Secrets に上記を登録してください。"
         )
+    if not client_config and creds_path and not creds_path.exists():
+        raise FileNotFoundError(f"credentials ファイルが見つかりません: {creds_path}")
+
+    token_path = _get_token_path()
     creds = None
-    if TOKEN_PATH.exists():
+    if token_path.exists():
         try:
-            creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
+            creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
         except Exception:
             creds = None
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            flow = InstalledAppFlow.from_client_secrets_file(str(creds_path), SCOPES)
+            if client_config:
+                flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
+            else:
+                flow = InstalledAppFlow.from_client_secrets_file(str(creds_path), SCOPES)
             if auth_url_callback is not None:
                 redirect_uri = f"http://localhost:{OAUTH_LOCAL_PORT}/"
                 flow.redirect_uri = redirect_uri
@@ -854,7 +968,12 @@ def main() -> None:
     st.subheader("Googleカレンダーへ自動登録")
     creds_path = get_credentials_path()
     if not creds_path:
-        st.info("自動登録を使うには、Google Cloud Console で OAuth クライアント（デスクトップ）を作成し、**credentials.json** を project/ に保存してください。")
+        st.info(
+            "自動登録を使うには、次のいずれかを設定してください。"
+            "**ローカル**: `project/.streamlit/secrets.toml` に GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET を書く（`secrets.toml.example` を参照）。"
+            "または `project/credentials.json` を配置。"
+            "**Streamlit Cloud**: App Settings → Secrets に上記を登録。"
+        )
     else:
         if "google_calendars" not in st.session_state:
             st.session_state.google_calendars = None
@@ -935,232 +1054,274 @@ if __name__ == "__main__":
 
 ---
 
-**付録 A の使い方**: 上記の各コードブロックを、記載したパス（`project/` からの相対パス）にそのまま保存する。`data/pdf/` と `logs/` はアプリ実行時に自動作成される。`credentials.json` と `token.json` は手動で配置する。
+**付録 A の使い方**: 上記の各コードブロックを、記載したパス（`project/` からの相対パス）にそのまま保存する。`data/pdf/` と `logs/` はアプリ実行時に自動作成される。
 
-この README だけで、同一構成のファイルを再生成できる。
+---
+
+## 付録 B: 同じアプリを起動する手順（README のみから再現）
+
+1. **ファイルの配置**  
+   付録 A のとおり、`project/` 以下に `requirements.txt`, `.gitignore`, `modules/*.py`, `app.py` を保存する。`project/.streamlit/secrets.toml.example` をコピーして `secrets.toml` を作成する（後で値を設定）。
+
+2. **認証情報のいずれかを用意する**  
+   - **方法 A（推奨）**: `project/.streamlit/secrets.toml` に Google Cloud Console で取得した `GOOGLE_CLIENT_ID` と `GOOGLE_CLIENT_SECRET` を記載する。  
+   - **方法 B**: `project/credentials.json`（OAuth クライアント「デスクトップ」の JSON）を配置する。初回ログイン後に `token.json` が自動作成される。
+
+3. **依存のインストールと起動**  
+   ```bash
+   cd project
+   pip install -r requirements.txt
+   streamlit run app.py
+   ```  
+   ブラウザで http://localhost:8501 を開く。
+
+4. **Streamlit Cloud で使う場合**  
+   GitHub に push し、Streamlit Cloud でデプロイ。App Settings → Secrets に `GOOGLE_CLIENT_ID` と `GOOGLE_CLIENT_SECRET` を登録する。credentials ファイルは不要。
+
+この README を読み込むだけで、同じ構成で同じアプリを起動できる。
 
 
-# 追加仕様：Google OAuth をローカル / Streamlit Cloud 両対応にする
+---
+
+**※ 追加仕様「Google OAuth をローカル / Streamlit Cloud 両対応」**  
+上記の内容は本文（§2 認証情報、§7 google_calendar_api、§9 .gitignore）および付録 A・付録 B に統合済みです。認証は Streamlit Secrets（`.streamlit/secrets.toml` または Cloud の Secrets）を最優先し、なければ credentials ファイルで行います。
+
+
+# 修正仕様（Cursor用）
+# Streamlit Cloud対応 Google OAuth 修正
 
 ## 1 目的
 
-Google Calendar API を利用するための Google OAuth 認証を
+現在の Google OAuth 実装では
 
-- ローカル開発環境
-- Streamlit Cloud
+```
+run_local_server()
+```
 
-の **両方で動作するようにする。**
+または
 
-OAuth の秘密情報は **GitHub に保存しない。**
+```
+wsgiref.simple_server
+```
+
+を使用している。
+
+これは **ローカルPC専用 OAuth方式**であり  
+Streamlit Cloud では使用できない。
+
+そのため以下のエラーが発生する。
+
+```
+OSError: [Errno 98] Address already in use
+```
+
+またスマートフォンからアクセスした場合  
+OAuth認証が正常に動作しない。
+
+本仕様では
+
+```
+Web OAuth フロー
+```
+
+に修正する。
 
 ---
 
-# 2 認証情報の管理
-
-認証情報は以下の方法で管理する。
-
-|環境|認証情報|
-|---|---|
-ローカル|`.streamlit/secrets.toml`|
-Streamlit Cloud|Streamlit Secrets|
-
----
-
-# 3 Streamlit Secrets 設定
-
-Streamlit Cloud 管理画面
+# 2 修正対象
 
 ```
-App Settings
-↓
-Secrets
-```
-
-以下を登録する。
-
-```
-GOOGLE_CLIENT_ID="xxxxxxxxxxxx.apps.googleusercontent.com"
-GOOGLE_CLIENT_SECRET="xxxxxxxxxxxx"
-```
-
----
-
-# 4 ローカル secrets.toml
-
-ローカル環境では以下ファイルを作成する。
-
-```
-project/.streamlit/secrets.toml
-```
-
-内容
-
-```
-GOOGLE_CLIENT_ID="xxxxxxxxxxxx.apps.googleusercontent.com"
-GOOGLE_CLIENT_SECRET="xxxxxxxxxxxx"
+project/modules/google_calendar_api.py
 ```
 
 ---
 
-# 5 ディレクトリ構造
+# 3 削除するコード
+
+以下のコードを削除する。
 
 ```
-cursor-soccerPDF
-└ project
-
-    app.py
-
-    modules
-        google_auth.py
-        calendar_api.py
-
-    .streamlit
-        secrets.toml
+run_local_server()
 ```
+
+または
+
+```
+wsgiref.simple_server.make_server()
+```
+
+例
+
+```
+server = wsgiref.simple_server.make_server(
+    "localhost", OAUTH_LOCAL_PORT, app
+)
+```
+
+これらは **すべて削除する。**
 
 ---
 
-# 6 .gitignore 設定
+# 4 OAuthフロー変更
 
-以下を `.gitignore` に追加する。
-
-```
-.streamlit/secrets.toml
-credentials.json
-token.json
-client_secret*.json
-```
-
-理由
-
-```
-OAuth秘密鍵をGitHubに公開しない
-```
+ローカルサーバー方式をやめ  
+認証URL方式へ変更する。
 
 ---
 
-# 7 OAuth スコープ
+# 5 OAuth設定
 
-Google Calendar API を利用するためのスコープ
+Google OAuth Client は
 
 ```
-SCOPES = [
-    "https://www.googleapis.com/auth/calendar.events"
-]
+Web Application
 ```
+
+として作成する。
 
 ---
 
-# 8 OAuth 読み込み実装
+# 6 redirect_uri
+
+Google Cloud Console に以下を追加する。
+
+```
+https://cursor-soccerpdf.streamlit.app
+```
+
+必要に応じて
+
+```
+http://localhost:8501
+```
+
+も追加する。
+
+---
+
+# 7 OAuthフロー実装
 
 ファイル
 
 ```
-modules/google_auth.py
+modules/google_calendar_api.py
 ```
 
 ---
 
-## Google OAuth Flow 作成
+## 認証URL生成
 
 ```
+from google_auth_oauthlib.flow import Flow
 import streamlit as st
-from google_auth_oauthlib.flow import InstalledAppFlow
 
 SCOPES = [
     "https://www.googleapis.com/auth/calendar.events"
 ]
 
-def create_flow():
+def get_auth_url():
 
     client_config = {
-        "installed": {
+        "web": {
             "client_id": st.secrets["GOOGLE_CLIENT_ID"],
             "client_secret": st.secrets["GOOGLE_CLIENT_SECRET"],
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token"
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [
+                "https://cursor-soccerpdf.streamlit.app"
+            ]
         }
     }
 
-    flow = InstalledAppFlow.from_client_config(
+    flow = Flow.from_client_config(
         client_config,
-        SCOPES
+        scopes=SCOPES,
+        redirect_uri="https://cursor-soccerpdf.streamlit.app"
     )
 
-    return flow
+    auth_url, state = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="true"
+    )
+
+    st.session_state["oauth_state"] = state
+
+    return auth_url
 ```
 
 ---
 
-# 9 Googleログイン処理
-
-```
-def google_login():
-
-    flow = create_flow()
-
-    creds = flow.run_local_server(port=0)
-
-    return creds
-```
-
----
-
-# 10 Streamlit UI
+# 8 Streamlit UI
 
 Googleログインボタン
 
 ```
-if st.button("Googleログイン"):
+auth_url = get_auth_url()
 
-    creds = google_login()
-
-    st.session_state["google_creds"] = creds
+st.link_button(
+    "Googleログイン",
+    auth_url
+)
 ```
 
 ---
 
-# 11 ログイン状態管理
+# 9 OAuth callback
 
-ログイン状態は
-
-```
-st.session_state
-```
-
-で管理する。
-
-例
+Google認証後  
+URLに以下パラメータが追加される。
 
 ```
-st.session_state["google_creds"]
+?code=xxxx
 ```
 
----
-
-# 12 Googleカレンダー登録
-
-ログイン済みの場合のみ実行する。
+これを取得する。
 
 ```
-if "google_creds" in st.session_state:
-
-    service = build(
-        "calendar",
-        "v3",
-        credentials=st.session_state["google_creds"]
-    )
+code = st.query_params.get("code")
 ```
 
 ---
 
-# 13 カレンダーイベント登録
+# 10 token取得
 
-例
+```
+flow.fetch_token(code=code)
+
+creds = flow.credentials
+```
+
+---
+
+# 11 セッション保存
+
+```
+st.session_state["google_creds"] = creds
+```
+
+---
+
+# 12 Google Calendar API
+
+認証後
+
+```
+from googleapiclient.discovery import build
+
+service = build(
+    "calendar",
+    "v3",
+    credentials=st.session_state["google_creds"]
+)
+```
+
+---
+
+# 13 カレンダー登録
 
 ```
 event = {
-    "summary": "サッカー試合",
+    "summary": title,
     "location": location,
     "description": description,
     "start": {
@@ -1184,92 +1345,60 @@ service.events().insert(
 # 14 動作フロー
 
 ```
+Googleログインボタン
+↓
+Google OAuthページ
+↓
+ユーザー認証
+↓
+Streamlitへリダイレクト
+↓
+code取得
+↓
+token取得
+↓
+Googleカレンダー操作
+```
+
+---
+
+# 15 対応環境
+
+この方式で以下の環境すべて対応可能。
+
+```
+PC Chrome
+PC Safari
+iPhone Safari
+iPhone Chrome
+Android Chrome
+Streamlit Cloud
+ローカル開発
+```
+
+---
+
+# 16 エラー解消
+
+以下エラーは発生しなくなる。
+
+```
+OSError: [Errno 98] Address already in use
+```
+
+---
+
+# 17 完成状態
+
+```
 PDFアップロード
 ↓
 試合抽出
 ↓
 Googleログイン
 ↓
-カレンダー登録
-```
-
----
-
-# 15 ローカル起動
-
-```
-cd cursor-soccerPDF/project
-streamlit run app.py
-```
-
----
-
-# 16 Streamlit Cloud デプロイ
-
-GitHub push
-
-```
-git push github master:main
-```
-
-Streamlit Cloud が自動で再デプロイする。
-
----
-
-# 17 動作確認
-
-Googleログインボタンを押す。
-
-以下が表示される。
-
-```
-Googleアカウント認証画面
-```
-
-認証後
-
-```
 Googleカレンダー登録
 ```
 
-が可能になる。
-
----
-
-# 18 セキュリティ
-
-以下は GitHub に保存しない。
-
-```
-client_secret.json
-credentials.json
-token.json
-secrets.toml
-```
-
-認証情報は
-
-```
-Streamlit Secrets
-```
-
-で管理する。
-
----
-
-# 19 完成状態
-
-```
-GitHub
-↓
-Streamlit Cloud
-↓
-Secrets 読み込み
-↓
-Google OAuth
-↓
-Googleカレンダー登録
-```
-
-ローカルと Streamlit Cloud の両方で  
-Googleログインが動作する。
+Streamlit Cloud 上で  
+スマートフォンからも正常に動作する。

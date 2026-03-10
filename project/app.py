@@ -22,7 +22,8 @@ from modules.google_calendar_api import (
     list_calendars,
     insert_events,
     get_credentials,
-    NeedUserToClickAuthLinkError,
+    get_auth_url,
+    process_oauth_callback,
 )
 
 
@@ -221,15 +222,16 @@ def main() -> None:
             label = f"{item['date']} {item['time']}  {item['match']}"
             st.markdown(f"- [{label}]({item['link']})")
 
-    # Googleカレンダーへ自動登録
+    # Googleカレンダーへ自動登録（Web OAuth フロー：認証URL → リダイレクト → code でトークン取得）
     st.subheader("Googleカレンダーへ自動登録")
     creds_path = get_credentials_path()
     if not creds_path:
         st.info(
-            "自動登録を使うには、次のいずれかを設定してください。"
-            "**ローカル**: `project/.streamlit/secrets.toml` に GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET を書く（`secrets.toml.example` を参照）。"
-            "または `project/credentials.json` を配置。"
-            "**Streamlit Cloud**: App Settings → Secrets に上記を登録。"
+            "自動登録を使うには、`project/.streamlit/secrets.toml`（ローカル）または "
+            "Streamlit Cloud の App Settings → Secrets に "
+            "GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET を設定してください。"
+            "Google Cloud の OAuth クライアントは「Web アプリケーション」で作成し、"
+            "リダイレクト URI にアプリの URL（例: https://xxx.streamlit.app）と http://localhost:8501 を追加してください。"
         )
     else:
         if "google_calendars" not in st.session_state:
@@ -237,36 +239,49 @@ def main() -> None:
 
         show_google_debug = st.checkbox("Google認証のデバッグ表示", value=False, key="google_debug")
 
-        # 未ログイン: ボタン表示 / ログイン済み: 状態表示 + ログアウト
-        if not st.session_state.google_logged_in:
-            if st.button("Googleでログイン"):
+        # コールバック: URL に ?code= が付いていればトークン取得してログイン済みにする
+        code = st.query_params.get("code")
+        if code:
+            try:
+                process_oauth_callback(code=code)
+                # URL から code/state を外して再表示（二重処理を防ぐ）
+                q = dict(st.query_params)
+                q.pop("code", None)
+                q.pop("state", None)
                 try:
-                    with st.status("Googleログイン処理中...", expanded=True) as status:
-                        st.info("ブラウザが別タブで開いたら、Googleでログインし「許可」をクリックしてください。開かない場合は下のリンクをクリックしてください。")
-                        if show_google_debug:
-                            st.write("① 認証ファイルを確認しています...")
-                        get_credentials(auth_url_callback=lambda url: None)
-                        if show_google_debug:
-                            st.write("② 認証完了。カレンダー一覧を取得しています...")
-                        cal_list = list_calendars()
-                        st.session_state.google_calendars = cal_list
-                        st.session_state.google_logged_in = True
-                        status.update(label="完了", state="complete", expanded=False)
-                    st.success("Googleログイン成功。登録先カレンダーを選んで「試合をカレンダー登録」を押してください。")
-                except NeedUserToClickAuthLinkError as e:
-                    st.warning("ブラウザが自動で開かないため、以下のリンクを**新しいタブで開いて**Googleでログイン・許可してください。")
-                    st.markdown(f"[**▶ ここをクリックしてGoogleでログイン**]({e.auth_url})")
-                    st.caption("認証が完了したら「認証完了しました」と出るページになります。そのタブを閉じて、もう一度「Googleでログイン」ボタンを押してください。")
-                    st.info("※ Google Cloud Console の OAuth クライアントに「リダイレクトURI」として **http://localhost:8080/** を追加してください。")
+                    st.experimental_set_query_params(**q)
+                except Exception:
+                    pass
+                st.session_state.google_logged_in = True
+                cal_list = list_calendars()
+                st.session_state.google_calendars = cal_list
+                st.success("Googleログインに成功しました。登録先カレンダーを選んで「試合をカレンダー登録」を押してください。")
+                st.rerun()
+            except Exception as e:  # noqa: BLE001
+                st.error(f"ログイン処理に失敗しました: {e}")
+                with st.expander("エラー詳細", expanded=True):
+                    st.code(traceback.format_exc(), language="text")
+
+        # 未ログイン: 認証URLへのリンクボタン / ログイン済み: 状態表示 + ログアウト
+        if not st.session_state.google_logged_in:
+            creds = get_credentials()
+            if creds is None:
+                try:
+                    auth_url = get_auth_url()
+                    st.link_button("Googleでログイン", auth_url, type="primary")
+                    st.caption("クリックすると Google の認証画面に移動します。許可後、このアプリに戻ります。")
+                except FileNotFoundError as e:
+                    st.warning(str(e))
                 except Exception as e:  # noqa: BLE001
-                    st.error(f"ログインに失敗しました: {e}")
-                    with st.expander("エラー詳細（デバッグ用）", expanded=True):
-                        st.code(traceback.format_exc(), language="text")
+                    st.error(f"認証URLの取得に失敗しました: {e}")
                     if show_google_debug:
-                        log_path = BASE_DIR / "logs" / "google_calendar.log"
-                        if log_path.exists():
-                            st.text("直近のログ (logs/google_calendar.log):")
-                            st.code(log_path.read_text(encoding="utf-8")[-4000:], language="text")
+                        with st.expander("エラー詳細", expanded=True):
+                            st.code(traceback.format_exc(), language="text")
+            else:
+                st.session_state.google_logged_in = True
+                cal_list = list_calendars()
+                st.session_state.google_calendars = cal_list
+                st.rerun()
         else:
             # ログイン済み: Googleアイコン + 状態表示 + ログアウト
             icon_col, text_col = st.columns([1, 8])
