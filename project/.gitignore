@@ -11,6 +11,9 @@ token.json
 credentials_production.json
 token_production.json
 client_secret_*.json
+
+# Streamlit Secrets（OAuth 秘密鍵を GitHub に上げない）
+.streamlit/secrets.toml
 __pycache__/
 logs/
 data/pdf/

@@ -938,3 +938,338 @@ if __name__ == "__main__":
 **付録 A の使い方**: 上記の各コードブロックを、記載したパス（`project/` からの相対パス）にそのまま保存する。`data/pdf/` と `logs/` はアプリ実行時に自動作成される。`credentials.json` と `token.json` は手動で配置する。
 
 この README だけで、同一構成のファイルを再生成できる。
+
+
+# 追加仕様：Google OAuth をローカル / Streamlit Cloud 両対応にする
+
+## 1 目的
+
+Google Calendar API を利用するための Google OAuth 認証を
+
+- ローカル開発環境
+- Streamlit Cloud
+
+の **両方で動作するようにする。**
+
+OAuth の秘密情報は **GitHub に保存しない。**
+
+---
+
+# 2 認証情報の管理
+
+認証情報は以下の方法で管理する。
+
+|環境|認証情報|
+|---|---|
+ローカル|`.streamlit/secrets.toml`|
+Streamlit Cloud|Streamlit Secrets|
+
+---
+
+# 3 Streamlit Secrets 設定
+
+Streamlit Cloud 管理画面
+
+```
+App Settings
+↓
+Secrets
+```
+
+以下を登録する。
+
+```
+GOOGLE_CLIENT_ID="xxxxxxxxxxxx.apps.googleusercontent.com"
+GOOGLE_CLIENT_SECRET="xxxxxxxxxxxx"
+```
+
+---
+
+# 4 ローカル secrets.toml
+
+ローカル環境では以下ファイルを作成する。
+
+```
+project/.streamlit/secrets.toml
+```
+
+内容
+
+```
+GOOGLE_CLIENT_ID="xxxxxxxxxxxx.apps.googleusercontent.com"
+GOOGLE_CLIENT_SECRET="xxxxxxxxxxxx"
+```
+
+---
+
+# 5 ディレクトリ構造
+
+```
+cursor-soccerPDF
+└ project
+
+    app.py
+
+    modules
+        google_auth.py
+        calendar_api.py
+
+    .streamlit
+        secrets.toml
+```
+
+---
+
+# 6 .gitignore 設定
+
+以下を `.gitignore` に追加する。
+
+```
+.streamlit/secrets.toml
+credentials.json
+token.json
+client_secret*.json
+```
+
+理由
+
+```
+OAuth秘密鍵をGitHubに公開しない
+```
+
+---
+
+# 7 OAuth スコープ
+
+Google Calendar API を利用するためのスコープ
+
+```
+SCOPES = [
+    "https://www.googleapis.com/auth/calendar.events"
+]
+```
+
+---
+
+# 8 OAuth 読み込み実装
+
+ファイル
+
+```
+modules/google_auth.py
+```
+
+---
+
+## Google OAuth Flow 作成
+
+```
+import streamlit as st
+from google_auth_oauthlib.flow import InstalledAppFlow
+
+SCOPES = [
+    "https://www.googleapis.com/auth/calendar.events"
+]
+
+def create_flow():
+
+    client_config = {
+        "installed": {
+            "client_id": st.secrets["GOOGLE_CLIENT_ID"],
+            "client_secret": st.secrets["GOOGLE_CLIENT_SECRET"],
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token"
+        }
+    }
+
+    flow = InstalledAppFlow.from_client_config(
+        client_config,
+        SCOPES
+    )
+
+    return flow
+```
+
+---
+
+# 9 Googleログイン処理
+
+```
+def google_login():
+
+    flow = create_flow()
+
+    creds = flow.run_local_server(port=0)
+
+    return creds
+```
+
+---
+
+# 10 Streamlit UI
+
+Googleログインボタン
+
+```
+if st.button("Googleログイン"):
+
+    creds = google_login()
+
+    st.session_state["google_creds"] = creds
+```
+
+---
+
+# 11 ログイン状態管理
+
+ログイン状態は
+
+```
+st.session_state
+```
+
+で管理する。
+
+例
+
+```
+st.session_state["google_creds"]
+```
+
+---
+
+# 12 Googleカレンダー登録
+
+ログイン済みの場合のみ実行する。
+
+```
+if "google_creds" in st.session_state:
+
+    service = build(
+        "calendar",
+        "v3",
+        credentials=st.session_state["google_creds"]
+    )
+```
+
+---
+
+# 13 カレンダーイベント登録
+
+例
+
+```
+event = {
+    "summary": "サッカー試合",
+    "location": location,
+    "description": description,
+    "start": {
+        "dateTime": start_time,
+        "timeZone": "Asia/Tokyo"
+    },
+    "end": {
+        "dateTime": end_time,
+        "timeZone": "Asia/Tokyo"
+    }
+}
+
+service.events().insert(
+    calendarId="primary",
+    body=event
+).execute()
+```
+
+---
+
+# 14 動作フロー
+
+```
+PDFアップロード
+↓
+試合抽出
+↓
+Googleログイン
+↓
+カレンダー登録
+```
+
+---
+
+# 15 ローカル起動
+
+```
+cd cursor-soccerPDF/project
+streamlit run app.py
+```
+
+---
+
+# 16 Streamlit Cloud デプロイ
+
+GitHub push
+
+```
+git push github master:main
+```
+
+Streamlit Cloud が自動で再デプロイする。
+
+---
+
+# 17 動作確認
+
+Googleログインボタンを押す。
+
+以下が表示される。
+
+```
+Googleアカウント認証画面
+```
+
+認証後
+
+```
+Googleカレンダー登録
+```
+
+が可能になる。
+
+---
+
+# 18 セキュリティ
+
+以下は GitHub に保存しない。
+
+```
+client_secret.json
+credentials.json
+token.json
+secrets.toml
+```
+
+認証情報は
+
+```
+Streamlit Secrets
+```
+
+で管理する。
+
+---
+
+# 19 完成状態
+
+```
+GitHub
+↓
+Streamlit Cloud
+↓
+Secrets 読み込み
+↓
+Google OAuth
+↓
+Googleカレンダー登録
+```
+
+ローカルと Streamlit Cloud の両方で  
+Googleログインが動作する。

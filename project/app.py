@@ -226,8 +226,10 @@ def main() -> None:
     creds_path = get_credentials_path()
     if not creds_path:
         st.info(
-            "自動登録を使うには、Google Cloud Console で OAuth クライアント（デスクトップ）を作成し、"
-            "**credentials.json** を `project/` に保存してください。"
+            "自動登録を使うには、次のいずれかを設定してください。"
+            "**ローカル**: `project/.streamlit/secrets.toml` に GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET を書く（`secrets.toml.example` を参照）。"
+            "または `project/credentials.json` を配置。"
+            "**Streamlit Cloud**: App Settings → Secrets に上記を登録。"
         )
     else:
         if "google_calendars" not in st.session_state:

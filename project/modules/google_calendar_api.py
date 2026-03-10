@@ -1,10 +1,11 @@
 """
 Google Calendar API v3 による OAuth2 認証とイベント登録。
-ローカル用と本番(Streamlit)用で credentials / token を切り替え可能。
+ローカル / Streamlit Cloud 両対応。
 
-- ローカル: project/credentials.json, project/token.json
-- 本番: 環境変数 GOOGLE_CREDENTIALS_FILE で指定、または credentials_production.json / client_secret_*.json
-        token は token_production.json または GOOGLE_TOKEN_FILE
+- 認証情報の優先順位:
+  1) Streamlit Secrets（GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET）: .streamlit/secrets.toml または Cloud の Secrets
+  2) 環境変数 GOOGLE_CREDENTIALS_FILE または credentials_production.json / client_secret_*.json / credentials.json
+- token: token.json / token_production.json または GOOGLE_TOKEN_FILE
 """
 from __future__ import annotations
 
@@ -70,8 +71,33 @@ def _get_token_path() -> Path:
     return PROJECT_DIR / "token.json"
 
 
+def _get_client_config_from_streamlit_secrets() -> dict | None:
+    """
+    Streamlit の secrets（.streamlit/secrets.toml または Cloud Secrets）から
+    GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET を読み、from_client_config 用の dict を返す。
+    無い場合は None。
+    """
+    try:
+        import streamlit as st
+        if "GOOGLE_CLIENT_ID" in st.secrets and "GOOGLE_CLIENT_SECRET" in st.secrets:
+            return {
+                "installed": {
+                    "client_id": str(st.secrets["GOOGLE_CLIENT_ID"]).strip(),
+                    "client_secret": str(st.secrets["GOOGLE_CLIENT_SECRET"]).strip(),
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "redirect_uris": ["http://localhost"],
+                }
+            }
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def get_credentials_path() -> Path | None:
-    """現在の credentials ファイルのパス。見つからなければ None。"""
+    """現在の credentials の参照元。ファイルのパス、または Secrets 利用時は .streamlit/secrets.toml のパス。見つからなければ None。"""
+    if _get_client_config_from_streamlit_secrets() is not None:
+        return PROJECT_DIR / ".streamlit" / "secrets.toml"
     return _find_credentials_file()
 
 
@@ -142,15 +168,17 @@ def get_credentials(auth_url_callback=None):
             "pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client"
         ) from e
 
-    creds_path = _find_credentials_file()
-    if not creds_path:
+    client_config = _get_client_config_from_streamlit_secrets()
+    creds_path = _find_credentials_file() if not client_config else None
+
+    if not client_config and not creds_path:
         raise FileNotFoundError(
-            "credentials ファイルがありません。"
-            "ローカル: project/credentials.json を配置。"
-            "本番: project/credentials_production.json または client_secret_*.json を配置するか、"
-            "環境変数 GOOGLE_CREDENTIALS_FILE でパスを指定してください。"
+            "認証情報がありません。"
+            "ローカル: project/.streamlit/secrets.toml に GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET を書くか、"
+            "project/credentials.json を配置してください。"
+            "Streamlit Cloud: App Settings → Secrets に上記を登録してください。"
         )
-    if not creds_path.exists():
+    if not client_config and creds_path and not creds_path.exists():
         raise FileNotFoundError(f"credentials ファイルが見つかりません: {creds_path}")
 
     token_path = _get_token_path()
@@ -165,7 +193,10 @@ def get_credentials(auth_url_callback=None):
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            flow = InstalledAppFlow.from_client_secrets_file(str(creds_path), SCOPES)
+            if client_config:
+                flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
+            else:
+                flow = InstalledAppFlow.from_client_secrets_file(str(creds_path), SCOPES)
             # 認証URLを先に取得してUIに表示する（ブラウザが自動で開かない環境用）
             if auth_url_callback is not None:
                 redirect_uri = f"http://localhost:{OAUTH_LOCAL_PORT}/"
