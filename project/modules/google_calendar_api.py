@@ -93,7 +93,8 @@ def _get_web_oauth_secrets() -> dict | None:
         return {
             "client_id": str(st.secrets["GOOGLE_CLIENT_ID"]).strip(),
             "client_secret": str(st.secrets["GOOGLE_CLIENT_SECRET"]).strip(),
-            "redirect_uri": redirect_uri.rstrip("/") if redirect_uri else "",
+            # redirect_uri は Google 側で「完全一致」判定されるため、末尾の / を含めて改変しない
+            "redirect_uri": redirect_uri if redirect_uri else "",
         }
     except Exception:  # noqa: BLE001
         pass
