@@ -73,7 +73,9 @@ def _get_token_path() -> Path:
 def _get_web_oauth_secrets() -> dict | None:
     """
     Streamlit Secrets から Web OAuth 用の client_id, client_secret, redirect_uri を取得。
-    GOOGLE_REDIRECT_URI が無い場合はローカル用に http://localhost:8501 を使用。
+    ローカル: GOOGLE_REDIRECT_URI 未設定時は http://localhost:8501 を使用。
+    Streamlit Cloud: GOOGLE_REDIRECT_URI は必須。ブラウザのアドレスバーと完全一致させる
+    （例: https://cursor-soccerpdf-5fzyy7tmi9rhgb3fggjjkk.streamlit.app）。一致しないと redirect_uri_mismatch になる。
     """
     try:
         import streamlit as st
@@ -83,11 +85,15 @@ def _get_web_oauth_secrets() -> dict | None:
         if not redirect_uri and "GOOGLE_REDIRECT_URI" in st.secrets:
             redirect_uri = str(st.secrets["GOOGLE_REDIRECT_URI"]).strip()
         if not redirect_uri:
-            redirect_uri = "http://localhost:8501"
+            # 本番（Streamlit Cloud）では未設定のままにせず、get_auth_url でエラーにする
+            if _is_production_mode():
+                redirect_uri = ""
+            else:
+                redirect_uri = "http://localhost:8501"
         return {
             "client_id": str(st.secrets["GOOGLE_CLIENT_ID"]).strip(),
             "client_secret": str(st.secrets["GOOGLE_CLIENT_SECRET"]).strip(),
-            "redirect_uri": redirect_uri.rstrip("/"),
+            "redirect_uri": redirect_uri.rstrip("/") if redirect_uri else "",
         }
     except Exception:  # noqa: BLE001
         pass
@@ -160,7 +166,7 @@ def _build_web_flow(redirect_uri: str, client_id: str, client_secret: str):
 def get_auth_url() -> str:
     """
     Web OAuth 用の認証 URL を返す。state は st.session_state["oauth_state"] に保存される。
-    Secrets に GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI が必要。
+    Secrets に GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET が必要。Streamlit Cloud では GOOGLE_REDIRECT_URI も必須。
     """
     import streamlit as st
     secrets = _get_web_oauth_secrets()
@@ -168,6 +174,14 @@ def get_auth_url() -> str:
         raise FileNotFoundError(
             "Streamlit Secrets に GOOGLE_CLIENT_ID と GOOGLE_CLIENT_SECRET を設定してください。"
             "Streamlit Cloud では App Settings → Secrets、ローカルでは .streamlit/secrets.toml に記載。"
+        )
+    if not (secrets.get("redirect_uri") or "").strip():
+        raise FileNotFoundError(
+            "Streamlit Cloud では GOOGLE_REDIRECT_URI の設定が必須です。"
+            "ブラウザのアドレスバーに表示されているアプリの URL（例: https://cursor-soccerpdf-5fzyy7tmi9rhgb3fggjjkk.streamlit.app）を、"
+            "1) Google Cloud Console の「認証済みリダイレクト URI」に追加し、"
+            "2) App Settings → Secrets に GOOGLE_REDIRECT_URI として同じ URL を設定してください。"
+            "完全一致しないと Error 400: redirect_uri_mismatch になります。"
         )
     flow = _build_web_flow(
         secrets["redirect_uri"],
@@ -191,6 +205,11 @@ def process_oauth_callback(code: str, state: str | None = None):
     secrets = _get_web_oauth_secrets()
     if not secrets:
         raise FileNotFoundError("Secrets が設定されていません。")
+    if not (secrets.get("redirect_uri") or "").strip():
+        raise FileNotFoundError(
+            "GOOGLE_REDIRECT_URI を設定してください（Streamlit Cloud では必須）。"
+            "アプリの URL を Google Cloud Console の認証済みリダイレクト URI と Secrets の両方に同じ値で設定してください。"
+        )
     saved_state = st.session_state.get("oauth_state") if state is None else state
     flow = _build_web_flow(
         secrets["redirect_uri"],
