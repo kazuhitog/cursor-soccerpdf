@@ -48,7 +48,13 @@ cursor_soccerPDF/
         └── google_calendar.log
 ```
 
-- **credentials.json** と **token.json** は `project/` 直下に配置する（git 管理しない）。
+- **credentials / token（ローカルと本番の切り替え）**
+  - **ローカル**: `project/credentials.json` と `project/token.json` を配置（git 管理しない）。
+  - **本番（Streamlit Cloud など）**: 次のいずれかで本番用を使う。
+    1. **ファイル名で自動切り替え**: 本番環境では `STREAMLIT_SERVER_RUNNING` が立つため、`credentials_production.json` または `client_secret_*.json`（例: `client_secret_842291968491-....apps.googleusercontent.com.json`）を `project/` に置くとそちらを参照する。token は `token_production.json`。
+    2. **環境変数で明示指定**: `GOOGLE_CREDENTIALS_FILE` に credentials のパス、`GOOGLE_TOKEN_FILE` に token のパスを指定する。Streamlit Cloud の「Advanced settings」→ Secrets や環境変数で設定する。
+    3. **本番モードの強制**: ローカルでも本番用を使う場合は `USE_PRODUCTION_CREDENTIALS=1` を設定する。
+  - 本番用ファイル（`credentials_production.json`, `token_production.json`, `client_secret_*.json`）は .gitignore 済み。
 
 ---
 

@@ -1,11 +1,16 @@
 """
 Google Calendar API v3 による OAuth2 認証とイベント登録。
-credentials.json / token.json は project/ 直下に配置する。
+ローカル用と本番(Streamlit)用で credentials / token を切り替え可能。
+
+- ローカル: project/credentials.json, project/token.json
+- 本番: 環境変数 GOOGLE_CREDENTIALS_FILE で指定、または credentials_production.json / client_secret_*.json
+        token は token_production.json または GOOGLE_TOKEN_FILE
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from pathlib import Path
 from typing import List, Any
@@ -16,17 +21,57 @@ logger = logging.getLogger(__name__)
 
 # モジュールの親 = project/
 PROJECT_DIR = Path(__file__).resolve().parents[1]
-TOKEN_PATH = PROJECT_DIR / "token.json"
+
+# 本番モード: Streamlit Cloud などでは True（環境変数で判定）
+def _is_production_mode() -> bool:
+    return (
+        os.environ.get("STREAMLIT_SERVER_RUNNING") == "true"
+        or os.environ.get("USE_PRODUCTION_CREDENTIALS", "").strip().lower() in ("1", "true", "yes")
+    )
 
 
 def _find_credentials_file() -> Path | None:
-    """credentials.json を project/ から探す。"""
+    """
+    使用する credentials ファイルを決める。
+    1) 環境変数 GOOGLE_CREDENTIALS_FILE が設定されていればそのパス（絶対、または project/ からの相対）
+    2) 本番モードなら credentials_production.json → client_secret_*.json の順で探す
+    3) それ以外は credentials.json（ローカル用）
+    """
+    env_path = os.environ.get("GOOGLE_CREDENTIALS_FILE", "").strip()
+    if env_path:
+        p = Path(env_path)
+        if not p.is_absolute():
+            p = PROJECT_DIR / p
+        return p if p.exists() else None
+
+    if _is_production_mode():
+        # 本番用: credentials_production.json または client_secret_*.json
+        prod = PROJECT_DIR / "credentials_production.json"
+        if prod.exists():
+            return prod
+        for f in sorted(PROJECT_DIR.glob("client_secret_*.json")):
+            return f
+        # 本番モードだがファイルが無い場合は credentials_production.json を期待
+        return prod
+
+    # ローカル: credentials.json
     p = PROJECT_DIR / "credentials.json"
     return p if p.exists() else None
 
 
+def _get_token_path() -> Path:
+    """使用する token ファイルのパス。本番時は token_production.json。"""
+    env_path = os.environ.get("GOOGLE_TOKEN_FILE", "").strip()
+    if env_path:
+        p = Path(env_path)
+        return p if p.is_absolute() else (PROJECT_DIR / p)
+    if _is_production_mode():
+        return PROJECT_DIR / "token_production.json"
+    return PROJECT_DIR / "token.json"
+
+
 def get_credentials_path() -> Path | None:
-    """credentials.json のパス。なければ None。"""
+    """現在の credentials ファイルのパス。見つからなければ None。"""
     return _find_credentials_file()
 
 
@@ -63,7 +108,8 @@ def _get_calendar_logger() -> logging.Logger:
 
 
 def _save_token_from_flow(creds) -> None:
-    """Credentials を token.json に保存。"""
+    """Credentials を token ファイルに保存（ローカル/本番でパスが異なる）。"""
+    token_path = _get_token_path()
     token_data = {
         "token": creds.token,
         "refresh_token": getattr(creds, "refresh_token", None),
@@ -72,7 +118,8 @@ def _save_token_from_flow(creds) -> None:
         "client_secret": creds.client_secret,
         "scopes": list(creds.scopes) if creds.scopes else SCOPES,
     }
-    TOKEN_PATH.write_text(json.dumps(token_data, indent=2), encoding="utf-8")
+    token_path.parent.mkdir(parents=True, exist_ok=True)
+    token_path.write_text(json.dumps(token_data, indent=2), encoding="utf-8")
 
 
 def get_credentials(auth_url_callback=None):
@@ -98,15 +145,19 @@ def get_credentials(auth_url_callback=None):
     creds_path = _find_credentials_file()
     if not creds_path:
         raise FileNotFoundError(
-            "project/ に credentials.json がありません。"
-            "Google Cloud Console で OAuth クライアント（デスクトップ）を作成し、"
-            "credentials.json を project/ に保存してください。"
+            "credentials ファイルがありません。"
+            "ローカル: project/credentials.json を配置。"
+            "本番: project/credentials_production.json または client_secret_*.json を配置するか、"
+            "環境変数 GOOGLE_CREDENTIALS_FILE でパスを指定してください。"
         )
+    if not creds_path.exists():
+        raise FileNotFoundError(f"credentials ファイルが見つかりません: {creds_path}")
 
+    token_path = _get_token_path()
     creds = None
-    if TOKEN_PATH.exists():
+    if token_path.exists():
         try:
-            creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
+            creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
         except Exception:  # noqa: BLE001
             creds = None
 
@@ -254,4 +305,4 @@ def insert_events(calendar_id: str, matches: List[Match]) -> tuple[int, List[str
     return success_count, errors
 
 
-__all__ = ["get_credentials", "get_credentials_path", "list_calendars", "insert_events", "TOKEN_PATH"]
+__all__ = ["get_credentials", "get_credentials_path", "list_calendars", "insert_events"]
