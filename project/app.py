@@ -92,18 +92,22 @@ def main() -> None:
     setup_logging()
     logger = logging.getLogger("app")
 
-    st.set_page_config(page_title="サッカー日程PDF → Googleカレンダー", layout="wide")
+    st.set_page_config(
+        page_title="サッカー日程PDF → Googleカレンダー",
+        layout="wide",
+        initial_sidebar_state="collapsed",
+    )
     st.title("サッカー日程PDF → Googleカレンダー登録ツール")
 
     st.markdown("PDFからテキストを解析し、**自チームの試合だけ** を抽出して Google カレンダーリンクやエクスポートデータを生成します。")
 
     # 開発者向け（サイドバー）※表示・非表示はここで一元管理。表示順は「全試合データ」の下で統一
     st.sidebar.header("開発者向け")
-    show_special_team = st.sidebar.checkbox("特殊チーム名設定を表示", value=True, key="sidebar_show_special_team")
+    show_special_team = st.sidebar.checkbox("特殊チーム名設定を表示", value=False, key="sidebar_show_special_team")
     show_venue_register = st.sidebar.checkbox("会場住所編集", value=False, key="sidebar_show_venue_register")
-    show_google_login_button = st.sidebar.checkbox("Google ログインボタンを表示", value=True, key="sidebar_show_google_login_button")
-    debug_mode = st.sidebar.checkbox("PDFデバッグモード", key="sidebar_debug")
-    dev_mode = st.sidebar.checkbox("開発者モード", key="sidebar_dev")
+    show_google_login_button = st.sidebar.checkbox("Google ログインボタンを表示", value=False, key="sidebar_show_google_login_button")
+    debug_mode = st.sidebar.checkbox("PDFデバッグモード", value=False, key="sidebar_debug")
+    dev_mode = st.sidebar.checkbox("開発者モード", value=False, key="sidebar_dev")
 
     # チーム名とPDFアップロードを横並び
     col1, col2 = st.columns(2)
@@ -224,78 +228,78 @@ def main() -> None:
             st.markdown(f"- [{label}]({item['link']})")
 
     # Googleカレンダーへ自動登録（Web OAuth フロー：認証URL → リダイレクト → code でトークン取得）
-    st.subheader("Googleカレンダーへ自動登録")
-    creds_path = get_credentials_path()
-    if not creds_path:
-        st.info(
-            "自動登録を使うには、`project/.streamlit/secrets.toml`（ローカル）または "
-            "Streamlit Cloud の App Settings → Secrets に "
-            "GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET を設定してください。"
-            "Google Cloud の OAuth クライアントは「Web アプリケーション」で作成し、"
-            "リダイレクト URI にアプリの URL（例: https://xxx.streamlit.app）と http://localhost:8501 を追加してください。"
-        )
-    else:
-        if "google_calendars" not in st.session_state:
-            st.session_state.google_calendars = None
-
-        show_google_debug = st.checkbox("Google認証のデバッグ表示", value=False, key="google_debug")
-
-        # トラブルシュート: redirect_uri_mismatch / アクセスブロック の案内
-        with st.expander("Googleログインでエラーになる場合", expanded=False):
-            st.markdown("**Error 400: redirect_uri_mismatch の場合**")
-            st.markdown(
-                "1. 下の「現在の redirect_uri」をコピーし、"
-                "Google Cloud Console → [APIとサービス] → [認証情報] → 対象の OAuth 2.0 クライアント ID → "
-                "「認証済みリダイレクト URI」に **同じ文字列を 1 文字も変えず** 追加してください。"
+    if show_google_login_button:
+        st.subheader("Googleカレンダーへ自動登録")
+        creds_path = get_credentials_path()
+        if not creds_path:
+            st.info(
+                "自動登録を使うには、`project/.streamlit/secrets.toml`（ローカル）または "
+                "Streamlit Cloud の App Settings → Secrets に "
+                "GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET を設定してください。"
+                "Google Cloud の OAuth クライアントは「Web アプリケーション」で作成し、"
+                "リダイレクト URI にアプリの URL（例: https://xxx.streamlit.app）と http://localhost:8501 を追加してください。"
             )
-            st.markdown(
-                "2. まだエラーなら、末尾の `/` の有無を変えた 2 通りを両方 Console に登録して試してください。"
-                "（例: `https://xxx.streamlit.app` と `https://xxx.streamlit.app/`）"
-            )
-            uri = get_redirect_uri_for_display()
-            if uri:
-                st.code(uri, language="text")
-                st.caption("↑ この値を Google Console の「認証済みリダイレクト URI」に追加")
-            else:
-                st.caption("（Secrets に GOOGLE_REDIRECT_URI を設定するか、Streamlit Cloud で開いていれば自動で表示されます）")
-            st.markdown("---")
-            st.markdown("**「このアプリのリクエストは無効です」「アクセスをブロック」の場合**")
-            st.markdown(
-                "OAuth 同意画面が「テスト」のとき、ログインできるのは **テストユーザーに追加した Google アカウントだけ** です。"
-                "登録したアカウント以外でログインするには: "
-                "Google Cloud Console → [APIとサービス] → [OAuth 同意画面] → [テストユーザー] で、"
-                "ログインしたいメールアドレス（例: lafcreate.biz@gmail.com）を追加してください。"
-                "またはアプリを「本番」に公開すると、任意の Google アカウントでログインできます。"
-            )
+        else:
+            if "google_calendars" not in st.session_state:
+                st.session_state.google_calendars = None
 
-        # コールバック: URL に ?code= が付いていればトークン取得してログイン済みにする
-        code = st.query_params.get("code")
-        if code:
-            try:
-                process_oauth_callback(code=code)
-                # URL から code/state を外して再表示（二重処理を防ぐ）
-                q = dict(st.query_params)
-                q.pop("code", None)
-                q.pop("state", None)
+            show_google_debug = st.checkbox("Google認証のデバッグ表示", value=False, key="google_debug")
+
+            # トラブルシュート: redirect_uri_mismatch / アクセスブロック の案内
+            with st.expander("Googleログインでエラーになる場合", expanded=False):
+                st.markdown("**Error 400: redirect_uri_mismatch の場合**")
+                st.markdown(
+                    "1. 下の「現在の redirect_uri」をコピーし、"
+                    "Google Cloud Console → [APIとサービス] → [認証情報] → 対象の OAuth 2.0 クライアント ID → "
+                    "「認証済みリダイレクト URI」に **同じ文字列を 1 文字も変えず** 追加してください。"
+                )
+                st.markdown(
+                    "2. まだエラーなら、末尾の `/` の有無を変えた 2 通りを両方 Console に登録して試してください。"
+                    "（例: `https://xxx.streamlit.app` と `https://xxx.streamlit.app/`）"
+                )
+                uri = get_redirect_uri_for_display()
+                if uri:
+                    st.code(uri, language="text")
+                    st.caption("↑ この値を Google Console の「認証済みリダイレクト URI」に追加")
+                else:
+                    st.caption("（Secrets に GOOGLE_REDIRECT_URI を設定するか、Streamlit Cloud で開いていれば自動で表示されます）")
+                st.markdown("---")
+                st.markdown("**「このアプリのリクエストは無効です」「アクセスをブロック」の場合**")
+                st.markdown(
+                    "OAuth 同意画面が「テスト」のとき、ログインできるのは **テストユーザーに追加した Google アカウントだけ** です。"
+                    "登録したアカウント以外でログインするには: "
+                    "Google Cloud Console → [APIとサービス] → [OAuth 同意画面] → [テストユーザー] で、"
+                    "ログインしたいメールアドレス（例: lafcreate.biz@gmail.com）を追加してください。"
+                    "またはアプリを「本番」に公開すると、任意の Google アカウントでログインできます。"
+                )
+
+            # コールバック: URL に ?code= が付いていればトークン取得してログイン済みにする
+            code = st.query_params.get("code")
+            if code:
                 try:
-                    st.experimental_set_query_params(**q)
-                except Exception:
-                    pass
-                st.session_state.google_logged_in = True
-                cal_list = list_calendars()
-                st.session_state.google_calendars = cal_list
-                st.success("Googleログインに成功しました。登録先カレンダーを選んで「試合をカレンダー登録」を押してください。")
-                st.rerun()
-            except Exception as e:  # noqa: BLE001
-                st.error(f"ログイン処理に失敗しました: {e}")
-                with st.expander("エラー詳細", expanded=True):
-                    st.code(traceback.format_exc(), language="text")
+                    process_oauth_callback(code=code)
+                    # URL から code/state を外して再表示（二重処理を防ぐ）
+                    q = dict(st.query_params)
+                    q.pop("code", None)
+                    q.pop("state", None)
+                    try:
+                        st.experimental_set_query_params(**q)
+                    except Exception:
+                        pass
+                    st.session_state.google_logged_in = True
+                    cal_list = list_calendars()
+                    st.session_state.google_calendars = cal_list
+                    st.success("Googleログインに成功しました。登録先カレンダーを選んで「試合をカレンダー登録」を押してください。")
+                    st.rerun()
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"ログイン処理に失敗しました: {e}")
+                    with st.expander("エラー詳細", expanded=True):
+                        st.code(traceback.format_exc(), language="text")
 
-        # 未ログイン: 認証URLへのリンクボタン / ログイン済み: 状態表示 + ログアウト
-        if not st.session_state.google_logged_in:
-            creds = get_credentials()
-            if creds is None:
-                if show_google_login_button:
+            # 未ログイン: 認証URLへのリンクボタン / ログイン済み: 状態表示 + ログアウト
+            if not st.session_state.google_logged_in:
+                creds = get_credentials()
+                if creds is None:
                     try:
                         auth_url = get_auth_url()
                         st.link_button("Googleでログイン", auth_url, type="primary")
@@ -308,50 +312,48 @@ def main() -> None:
                             with st.expander("エラー詳細", expanded=True):
                                 st.code(traceback.format_exc(), language="text")
                 else:
-                    st.info("Google ログインボタンは開発者向けメニューで非表示になっています。")
+                    st.session_state.google_logged_in = True
+                    cal_list = list_calendars()
+                    st.session_state.google_calendars = cal_list
+                    st.rerun()
             else:
-                st.session_state.google_logged_in = True
-                cal_list = list_calendars()
-                st.session_state.google_calendars = cal_list
-                st.rerun()
-        else:
-            # ログイン済み: Googleアイコン + 状態表示 + ログアウト
-            icon_col, text_col = st.columns([1, 8])
-            with icon_col:
-                st.image("https://www.google.com/favicon.ico", width=24)
-            with text_col:
-                st.markdown("**🟢 Googleログイン済み**")
-            if st.button("ログアウト"):
-                st.session_state.google_logged_in = False
-                st.session_state.google_calendars = None
-                st.rerun()
+                # ログイン済み: Googleアイコン + 状態表示 + ログアウト
+                icon_col, text_col = st.columns([1, 8])
+                with icon_col:
+                    st.image("https://www.google.com/favicon.ico", width=24)
+                with text_col:
+                    st.markdown("**🟢 Googleログイン済み**")
+                if st.button("ログアウト"):
+                    st.session_state.google_logged_in = False
+                    st.session_state.google_calendars = None
+                    st.rerun()
 
-        calendars = st.session_state.google_calendars
-        if calendars:
-            options = [f"{c['summary']} ({'メイン' if c['primary'] else ''})" for c in calendars]
-            calendar_ids = [c["id"] for c in calendars]
-            idx = 0
-            for i, c in enumerate(calendars):
-                if c.get("primary"):
-                    idx = i
-                    break
-            choice = st.selectbox("登録カレンダー", range(len(options)), format_func=lambda i: options[i], index=idx)
-            calendar_id = calendar_ids[choice]
-            if st.button("試合をカレンダー登録"):
-                success, errs = insert_events(calendar_id, filtered)
-                if errs:
-                    st.error("登録失敗: " + "; ".join(errs[:3]) + (" ..." if len(errs) > 3 else ""))
-                if success:
-                    st.success(f"登録完了: {success} 件")
-        elif st.session_state.google_calendars is not None and len(st.session_state.google_calendars) == 0:
-            st.warning("カレンダーが取得できませんでした。")
+            calendars = st.session_state.google_calendars
+            if calendars:
+                options = [f"{c['summary']} ({'メイン' if c['primary'] else ''})" for c in calendars]
+                calendar_ids = [c["id"] for c in calendars]
+                idx = 0
+                for i, c in enumerate(calendars):
+                    if c.get("primary"):
+                        idx = i
+                        break
+                choice = st.selectbox("登録カレンダー", range(len(options)), format_func=lambda i: options[i], index=idx)
+                calendar_id = calendar_ids[choice]
+                if st.button("試合をカレンダー登録"):
+                    success, errs = insert_events(calendar_id, filtered)
+                    if errs:
+                        st.error("登録失敗: " + "; ".join(errs[:3]) + (" ..." if len(errs) > 3 else ""))
+                    if success:
+                        st.success(f"登録完了: {success} 件")
+            elif st.session_state.google_calendars is not None and len(st.session_state.google_calendars) == 0:
+                st.warning("カレンダーが取得できませんでした。")
 
-        # デバッグ: ログファイルの末尾を常に表示可能に
-        if creds_path and show_google_debug:
-            log_path = BASE_DIR / "logs" / "google_calendar.log"
-            if log_path.exists():
-                with st.expander("デバッグ: google_calendar.log の内容"):
-                    st.code(log_path.read_text(encoding="utf-8")[-3000:], language="text")
+            # デバッグ: ログファイルの末尾を常に表示可能に
+            if creds_path and show_google_debug:
+                log_path = BASE_DIR / "logs" / "google_calendar.log"
+                if log_path.exists():
+                    with st.expander("デバッグ: google_calendar.log の内容"):
+                        st.code(log_path.read_text(encoding="utf-8")[-3000:], language="text")
 
     # 試合エクスポート
     st.subheader("試合エクスポート")
@@ -365,18 +367,27 @@ def main() -> None:
         mime="text/csv",
     )
 
-    # ICS
+    # ICS（SUMMARY に対戦カード、DESCRIPTION に対戦カード + 会場・住所）
     ics_lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//soccer-pdf//JP"]
     for m in filtered:
         start_dt, end_dt = m.start_end_datetimes()
         fmt = "%Y%m%dT%H%M%S"
+        summary = f"{m.teamA} vs {m.teamB}"
+        # 会場 + 住所（venue_resolver.resolve_location を使用）
+        loc = ""
+        try:
+            loc = resolve_location(m.location or "")
+        except Exception:
+            loc = m.location or ""
+        # DESCRIPTION には対戦カードを含めず、会場＋住所のみを入れる（例: 長岡ニュータウン\\n〒940-...）
+        desc = loc or summary
         ics_lines.extend(
             [
                 "BEGIN:VEVENT",
-                "SUMMARY:サッカー試合",
+                f"SUMMARY:{summary}",
                 f"DTSTART:{start_dt.strftime(fmt)}",
                 f"DTEND:{end_dt.strftime(fmt)}",
-                f"DESCRIPTION:{m.teamA} vs {m.teamB}",
+                f"DESCRIPTION:{desc}",
                 "END:VEVENT",
             ]
         )
