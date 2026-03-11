@@ -26,12 +26,53 @@ from modules.google_calendar_api import (
     get_auth_url,
     process_oauth_callback,
 )
+from modules.venue_resolver import (
+    load_venue_master,
+    normalize_location,
+    resolve_location,
+    ensure_venue_keywords,
+    save_venue_master,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 PDF_DIR = DATA_DIR / "pdf"
 LOGS_DIR = BASE_DIR / "logs"
+
+
+def _render_special_team_section() -> None:
+    """特殊チーム名の追加・削除UI（画面最下部の expander 内で使用）。"""
+    with st.expander("特殊チーム設定", expanded=False):
+        st.caption("※ 一部チームは正式名称と異なるため必要な場合のみ入力してください。スペースを含むチーム名を登録するとPDF解析で正しく認識されます。")
+        special_names = load_special_team_names()
+        add_col, _ = st.columns([2, 4])
+        with add_col:
+            new_name = st.text_input("追加するチーム名", placeholder="例: Regalis F.C", key="new_special_team")
+            if st.button("追加", key="btn_add_special"):
+                name_stripped = (new_name or "").strip()
+                if name_stripped and name_stripped not in special_names:
+                    special_names.append(name_stripped)
+                    save_special_team_names(special_names)
+                    st.success(f"「{name_stripped}」を追加しました。")
+                    st.rerun()
+                elif name_stripped in special_names:
+                    st.warning("すでに登録されています。")
+                else:
+                    st.warning("チーム名を入力してください。")
+        if special_names:
+            st.markdown("**登録一覧**")
+            for i, name in enumerate(special_names):
+                del_col1, del_col2 = st.columns([1, 5])
+                with del_col1:
+                    if st.button("削除", key=f"del_special_{i}"):
+                        special_names.pop(i)
+                        save_special_team_names(special_names)
+                        st.rerun()
+                with del_col2:
+                    st.text(name)
+        else:
+            st.info("登録がありません。上の入力欄から追加してください。")
 
 
 def setup_logging() -> None:
@@ -56,6 +97,13 @@ def main() -> None:
 
     st.markdown("PDFからテキストを解析し、**自チームの試合だけ** を抽出して Google カレンダーリンクやエクスポートデータを生成します。")
 
+    # 開発者向け（サイドバー）※表示・非表示はここで一元管理。表示順は「全試合データ」の下で統一
+    st.sidebar.header("開発者向け")
+    show_special_team = st.sidebar.checkbox("特殊チーム名設定を表示", value=True, key="sidebar_show_special_team")
+    show_venue_register = st.sidebar.checkbox("会場住所編集", value=False, key="sidebar_show_venue_register")
+    debug_mode = st.sidebar.checkbox("PDFデバッグモード", key="sidebar_debug")
+    dev_mode = st.sidebar.checkbox("開発者モード", key="sidebar_dev")
+
     # チーム名とPDFアップロードを横並び
     col1, col2 = st.columns(2)
     with col1:
@@ -63,51 +111,16 @@ def main() -> None:
     with col2:
         uploaded_file = st.file_uploader("試合日程PDF", type=["pdf"])
 
-    # 特殊チーム名一覧（追加・削除）
-    st.subheader("特殊チーム名")
-    st.caption("スペースを含むチーム名を登録すると、PDF解析で正しく認識されます。")
-    special_names = load_special_team_names()
-    add_col, _ = st.columns([2, 4])
-    with add_col:
-        new_name = st.text_input("追加するチーム名", placeholder="例: Regalis F.C", key="new_special_team")
-        if st.button("追加"):
-            name_stripped = (new_name or "").strip()
-            if name_stripped and name_stripped not in special_names:
-                special_names.append(name_stripped)
-                save_special_team_names(special_names)
-                st.success(f"「{name_stripped}」を追加しました。")
-                st.rerun()
-            elif name_stripped in special_names:
-                st.warning("すでに登録されています。")
-            else:
-                st.warning("チーム名を入力してください。")
-    if special_names:
-        st.markdown("**登録一覧**")
-        for i, name in enumerate(special_names):
-            del_col1, del_col2 = st.columns([1, 5])
-            with del_col1:
-                if st.button("削除", key=f"del_special_{i}"):
-                    special_names.pop(i)
-                    save_special_team_names(special_names)
-                    st.rerun()
-            with del_col2:
-                st.text(name)
-    else:
-        st.info("登録がありません。上の入力欄から追加してください。")
-
     if not uploaded_file:
         st.info("PDFをアップロードしてください。")
+        if show_special_team:
+            _render_special_team_section()
         return
 
     PDF_DIR.mkdir(parents=True, exist_ok=True)
     pdf_path = PDF_DIR / uploaded_file.name
     with open(pdf_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
-
-    # デバッグ・開発者モード
-    st.sidebar.header("開発者向け")
-    debug_mode = st.sidebar.checkbox("PDFデバッグモード")
-    dev_mode = st.sidebar.checkbox("開発者モード")
 
     # セッション状態の初期化
     if "lines" not in st.session_state:
@@ -138,6 +151,10 @@ def main() -> None:
             st.session_state.df_team = None
         else:
             st.session_state.matches_all = matches_all
+            # 取得会場を正規化し、未登録の keyword のみ会場住所編集テーブルに追加
+            ensure_venue_keywords(
+                normalize_location(m.location) for m in matches_all if m.location and str(m.location).strip()
+            )
 
             # チーム名フィルタ
             if not team_name.strip():
@@ -165,32 +182,9 @@ def main() -> None:
         st.info("「試合を抽出する」ボタンを押して抽出を実行してください。")
         return
 
-    # デバッグ表示
-    if debug_mode or dev_mode:
-        st.subheader("PDF抽出テキスト（デバッグ）")
-        st.text_area("PDF抽出テキスト", extracted_text, height=200)
-
-        st.subheader("行単位表示")
-        for i, line in enumerate(lines, start=1):
-            st.write(f"{i}: {line}")
-
     # 全試合データ用のDataFrame（末尾のアコーディオンで表示）
     all_dicts: List[dict] = [m.to_dict() for m in matches_all]
     df_all = pd.DataFrame(all_dicts)
-
-    # 開発者モード用の抽出結果詳細
-    if dev_mode and matches_all:
-        st.subheader("抽出結果（開発者モード）")
-        # 現在の開催日・会場（最初の試合から推定）
-        first = matches_all[0]
-        st.write(f"DATE = {first.date}")
-        st.write(f"LOCATION = {first.location}")
-        for idx, m in enumerate(matches_all, start=1):
-            st.write(
-                f"Line {idx}: age={m.age_group} no={m.no} time={m.time} "
-                f"home={m.teamA} away={m.teamB} referee={m.referee} assistant={m.assistant} "
-                f"location={m.location}"
-            )
 
     # 自チーム試合一覧
     st.subheader("自チーム試合一覧")
@@ -198,7 +192,12 @@ def main() -> None:
         st.info(f"「{team_name}」が含まれる試合は見つかりませんでした。")
         return
 
-    st.dataframe(df_team, use_container_width=True)
+    # 表示用に age_group, no を除外し、会場名（location）は正規化して表示
+    cols_hidden = ["age_group", "no"]
+    df_team_display = df_team.drop(columns=[c for c in cols_hidden if c in df_team.columns], errors="ignore").copy()
+    if "location" in df_team_display.columns:
+        df_team_display["location"] = df_team_display["location"].apply(lambda x: normalize_location(str(x)) if x else "")
+    st.dataframe(df_team_display, use_container_width=True)
 
     # Google カレンダーリンク生成
     st.subheader("Googleカレンダーリンク生成")
@@ -388,8 +387,64 @@ def main() -> None:
     )
 
     # 全試合データ（折りたたみ）
+    # 表示用に age_group, no を除外し、会場名（location）は正規化して表示
+    df_all_display = df_all.drop(columns=["age_group", "no"], errors="ignore").copy()
+    if "location" in df_all_display.columns:
+        df_all_display["location"] = df_all_display["location"].apply(lambda x: normalize_location(str(x)) if x else "")
     with st.expander("全試合データ", expanded=False):
-        st.dataframe(df_all, use_container_width=True)
+        st.dataframe(df_all_display, use_container_width=True)
+
+    # 開発者向け機能（全試合データの下に区分。表示順: 特殊チーム名設定 → 会場住所編集 → PDFデバッグ → 開発者モード）
+    if show_special_team or show_venue_register or debug_mode or dev_mode:
+        st.markdown("---")
+        st.subheader("開発者向け")
+
+    if show_special_team:
+        st.markdown("**特殊チーム名設定を表示**")
+        _render_special_team_section()
+        st.markdown("---")
+
+    if show_venue_register:
+        st.markdown("**会場住所編集**")
+        st.caption("取得された会場名（正規化後）が未登録なら自動で keyword に追加されます。住所はセルを編集して Enter で確定後、下の「変更を反映」で保存してください。")
+        venue_df = load_venue_master()
+        edited_df = st.data_editor(
+            venue_df,
+            key="venue_editor",
+            use_container_width=True,
+            num_rows="dynamic",
+            column_config={"keyword": "会場名", "address": "住所"},
+        )
+        if not edited_df.equals(venue_df):
+            save_venue_master(edited_df)
+            st.success("変更を反映しました。")
+            st.rerun()
+        if st.button("変更を反映", key="venue_save_btn"):
+            save_venue_master(edited_df)
+            st.success("変更を反映しました。")
+            st.rerun()
+        st.markdown("---")
+
+    if debug_mode:
+        st.markdown("**PDFデバッグモード**")
+        st.text_area("PDF抽出テキスト", extracted_text, height=200, key="debug_extracted")
+        st.write("行単位表示")
+        for i, line in enumerate(lines, start=1):
+            st.write(f"{i}: {line}")
+        st.markdown("---")
+
+    if dev_mode and matches_all:
+        st.markdown("**開発者モード**")
+        st.write("抽出結果（開発者モード）")
+        first = matches_all[0]
+        st.write(f"DATE = {first.date}")
+        st.write(f"LOCATION = {first.location}")
+        for idx, m in enumerate(matches_all, start=1):
+            st.write(
+                f"Line {idx}: age={m.age_group} no={m.no} time={m.time} "
+                f"home={m.teamA} away={m.teamB} referee={m.referee} assistant={m.assistant} "
+                f"location={m.location}"
+            )
 
 
 if __name__ == "__main__":

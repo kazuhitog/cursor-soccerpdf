@@ -5,15 +5,7 @@
 
 ---
 
-## 追加仕様のまとめ（これまでに取り込んだ仕様）
-
-| 項目 | 内容 |
-|------|------|
-| **リポジトリ構成** | アプリは `project/` のみ。ルート直下の旧アプリは廃止。 |
-| **UI 改善** | チーム名と PDF アップロードを横並び。セクション番号削除。全試合データはアコーディオン表示。Google ログイン状態表示・ログアウト・アイコン。 |
-| **特殊チーム名** | `data/special_team_names.txt` で 1 行 1 件管理。ダッシュボードで一覧・追加・削除。 |
-| **credentials の切り替え** | ローカル: `credentials.json` / `token.json`。本番: `credentials_production.json` または `client_secret_*.json`、`token_production.json`。環境変数でパス指定可。 |
-| **Google OAuth（Web OAuth フロー）** | **run_local_server / wsgiref は使わない**（Streamlit Cloud・スマホで「Address already in use」を防ぐ）。認証は **Streamlit Secrets** のみ: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`。任意で `GOOGLE_REDIRECT_URI`（未設定時は `http://localhost:8501`）。OAuth クライアントは「Web アプリケーション」、リダイレクト URI にアプリ URL と `http://localhost:8501` を追加。`get_auth_url()` → ユーザーがリンクで Google へ → リダイレクトで `?code=xxx` → `process_oauth_callback(code)` でトークン取得・token ファイル保存。UI は `st.link_button("Googleでログイン", auth_url)`。 |
+本文の §1〜§10 および §2 構成・§7 モジュール・§8 UI・付録に、リポジトリ構成・UI・OAuth・Location・開発者向けメニューなど**すべての仕様を組み込んであります**。以下はその説明です。
 
 ---
 
@@ -30,9 +22,9 @@
 ## 1 目的・概要
 
 - サッカーリーグの **試合日程PDF** を解析し、指定チームの試合を抽出する。
-- **Googleカレンダー登録リンク** の生成と、**Googleログインによるカレンダー自動登録** の両方に対応する。
+- **Googleカレンダー登録リンク** の生成と、**Googleログインによるカレンダー自動登録** の両方に対応する。登録時の location は会場辞書（venue_master.csv）で「会場名＋住所」にし、地図・ナビ連携する。
 - **特殊チーム名** は別ファイルで管理し、ダッシュボードから追加・削除できる。
-- **CSV / ICS エクスポート** と **PDF解析デバッグ** を提供する。
+- **CSV / ICS エクスポート** と **PDF解析デバッグ** を提供する。開発者向けの表示（デバッグ・会場辞書・特殊チーム設定など）はサイドバー「開発者向け」のチェックで表示・非表示を切り替える。
 
 ---
 
@@ -52,10 +44,12 @@ cursor_soccerPDF/
     │   ├── pdf_reader.py
     │   ├── match_parser.py
     │   ├── calendar_link.py
-    │   └── google_calendar_api.py
+    │   ├── google_calendar_api.py
+    │   └── venue_resolver.py         # 会場→住所（venue_master.csv）。location 地図・ナビ連携用
     ├── data/
     │   ├── pdf/
-    │   └── special_team_names.txt   # 1行1チーム名（UTF-8）。無ければデフォルト使用。
+    │   ├── special_team_names.txt   # 1行1チーム名（UTF-8）。無ければデフォルト使用。
+    │   └── venue_master.csv         # 会場辞書（keyword, address）。開発者モードで登録可
     └── logs/
         ├── app.log
         ├── parser_error.log
@@ -125,17 +119,18 @@ PDFアップロード
   - `get_auth_url()`: Flow（"web" client_config）で認証 URL を生成し、`st.session_state["oauth_state"]` に state を保存して URL を返す。  
   - `process_oauth_callback(code, state)`: リダイレクト後の `?code=xxx` で呼び、`flow.fetch_token(code=code, state=state)` でトークン取得し token ファイルに保存して Credentials を返す。  
   - `get_credentials()`: token ファイルから読み取りのみ。無ければ `None`（サーバー起動はしない）。  
-  - その他: `get_credentials_path()`, `get_calendar_service(creds=None)`, `list_calendars()`, `insert_events(calendar_id, matches)`。スコープ: `calendar.readonly`, `calendar.events`。イベント body: summary / location / description / start・end（Asia/Tokyo）。ログ: `logs/google_calendar.log`。
+  - その他: `get_credentials_path()`, `get_calendar_service(creds=None)`, `list_calendars()`, `insert_events(calendar_id, matches)`。`match_to_event_body(match)` は location を `venue_resolver.resolve_location(match.location)` で解決（会場名＋住所、地図・ナビ連携）。スコープ: `calendar.readonly`, `calendar.events`。ログ: `logs/google_calendar.log`。
+- **venue_resolver.py**: `data/venue_master.csv`（keyword, address）を読み書き。`load_venue_master()` で DataFrame 取得。`resolve_location(venue)` で会場名→「会場名\n住所」を返す（未登録は会場名のみ）。`add_venue(keyword, address)` で CSV に 1 件追加・同一 keyword は上書き。
 
 ---
 
 ## 8 Streamlit UI（app.py）
 
 - **レイアウト**: チーム名入力とPDFアップロードは `st.columns(2)` で横並び。セクション番号は付けず `st.subheader` で見出し。
-- **順序**: タイトル → チーム名｜PDFアップロード → **特殊チーム名**（追加・削除）→ PDF未アップロード時は return → 「試合を抽出する」→ 自チーム試合一覧 → Googleカレンダーリンク生成 → **Googleカレンダーへ自動登録** → 試合エクスポート → 全試合データ（アコーディオン）。
+- **順序**: タイトル → チーム名｜PDFアップロード → PDF未アップロード時は「PDFをアップロードしてください」＋**特殊チーム設定**（expander）で return。PDF あり時は「試合を抽出する」→ 自チーム試合一覧 → Googleカレンダーリンク生成 → **Googleカレンダーへ自動登録** → 試合エクスポート → 全試合データ（アコーディオン）→ **特殊チーム設定**（expander、画面最下部）。特殊チーム名は一覧・追加・削除を `st.expander("特殊チーム設定")` 内に配置し、説明文「※ 一部チームは正式名称と異なるため必要な場合のみ入力してください」を表示。
 - **Google ログイン（Web OAuth）**: URL に `?code=` があれば `process_oauth_callback(code)` でトークン取得→ログイン済みにし、`st.query_params` から code/state を削除して rerun。未ログイン時は `get_auth_url()` で認証 URL を取得し `st.link_button("Googleでログイン", auth_url)` で表示。ログイン済みは favicon + 「🟢 Googleログイン済み」+「ログアウト」。
 - CSV ヘッダー: `date,location,age_group,no,time,home,away,referee,assistant`（Match の to_dict のキーに合わせる）。ICS は VEVENT で SUMMARY/DTSTART/DTEND/DESCRIPTION。
-- サイドバー: 「開発者向け」で PDFデバッグモード・開発者モードのチェック。デバッグ時は抽出テキスト・行番号付き表示など。
+- **サイドバー「開発者向け」**: PDFデバッグモード・開発者モード・**特殊チーム設定を表示**・**会場登録**の 4 つをチェックで表示制御。開発者モード ON 時は抽出結果の詳細（DATE / LOCATION / 行単位）を表示。**会場登録**を ON にしたときだけ、メインエリアに「取得会場キーワード」「会場辞書テーブル」「会場登録フォーム」を表示する（会場確認と登録作業の分離・誤操作防止）。
 
 ---
 
@@ -156,6 +151,8 @@ PDFアップロード
 - CSV / ICS エクスポート
 - PDF デバッグモード
 - 全試合データのアコーディオン表示
+- 特殊チーム名は画面最下部の「特殊チーム設定」expander 内（開発者向けで表示切替可）
+- 会場→住所マッピング（venue_master.csv）で Google カレンダー location を「会場名＋住所」にし地図・ナビ連携。サイドバー「開発者向け」の**会場登録**チェック ON 時のみ、取得会場キーワード・会場辞書・会場登録フォームを表示
 
 ---
 
@@ -1147,258 +1144,460 @@ if __name__ == "__main__":
 
 この README を読み込むだけで、同じ構成で同じアプリを起動できる。
 
----
+# 会場名（location）正規化処理仕様
 
-## 追加仕様（Web OAuth）の参照
+## 1. 目的
 
-**「修正仕様（Cursor用）Streamlit Cloud対応 Google OAuth 修正」** は本文・付録 A に統合済みです。
+Googleカレンダー等から取得した `location`（会場名）には  
+補足情報や注意書きが含まれることがあり、同一会場でも別会場として認識される問題がある。
 
-- **要点**: `run_local_server` / `wsgiref` は使わず、**Web OAuth フロー**（認証 URL → ユーザーが Google で許可 → リダイレクトで `?code=xxx` → `process_oauth_callback(code)` でトークン取得）に統一。OAuth クライアントは「Web アプリケーション」、リダイレクト URI にアプリ URL と `http://localhost:8501` を追加。UI は `st.link_button("Googleでログイン", get_auth_url())`。これにより Streamlit Cloud・スマホで「Address already in use」が解消し、同一フローで PC／スマホ／Cloud すべて対応。
+例
 
-# 修正仕様（Cursor用）
-# Google OAuth redirect_uri_mismatch 修正
+太夫浜球技場  
+太夫浜球技場（フレンドリー）  
+太夫浜球技場 ※準備：9時～ライン引き  
 
-## 1 問題
-
-Streamlit Cloud 上で Google ログインを実行すると以下エラーが発生する。
-
-Error 400: redirect_uri_mismatch
-
-原因は Google OAuth の `redirect_uri` が  
-Google Cloud Console に登録されている URI と一致していないため。
+この問題を解決するため、location取得後に **正規化処理**を行い、  
+純粋な会場名のみを抽出する。
 
 ---
 
-# 2 原因
-
-Streamlit Cloud のアプリ URL は以下の形式になる。
+# 2. 処理タイミング
 
 ```
-https://cursor-soccerpdf-xxxxxxxxxxxxxxxx.streamlit.app/
-```
-
-しかし現在のコードでは
-
-```
-https://cursor-soccerpdf.streamlit.app/
-```
-
-を redirect_uri として使用しているため一致しない。
-
-OAuth は **完全一致**で URI を検証するため  
-この違いで認証が失敗する。
-
----
-
-# 3 修正方針
-
-以下の2点を修正する。
-
-1. Google Cloud Console に正しい redirect URI を登録
-2. アプリコードの redirect_uri を修正
-
----
-
-# 4 Google Cloud Console 修正
-
-Google Cloud Console を開く
-
-```
-https://console.cloud.google.com/apis/credentials
-```
-
-対象の OAuth クライアントを編集する。
-
-アプリタイプ
-
-```
-Web application
+Google Calendar API
+      ↓
+location取得
+      ↓
+会場名正規化処理（本仕様）
+      ↓
+会場マスタ照合
 ```
 
 ---
 
-## Authorized redirect URIs
+# 3. 正規化ルール
 
-以下を追加する。
-
-```
-https://cursor-soccerpdf-5fzyy7tmi9rhgb3fggjjkk.streamlit.app/
-```
-
-さらに将来のために以下も追加する。
-
-```
-https://cursor-soccerpdf.streamlit.app/
-```
-
-ローカル開発用
-
-```
-http://localhost:8501/
-```
+locationに対して以下の処理を **上から順に適用する**
 
 ---
 
-# 5 OAuthコード修正
+## ルール1
 
-対象ファイル
-
-```
-project/modules/google_calendar_api.py
-```
-
----
-
-## 修正前
+### （）で囲まれているテキストを削除
 
 ```
-redirect_uri="https://cursor-soccerpdf.streamlit.app/"
+削除対象
+
+（フレンドリー）
+（練習）
+（サブグラウンド）
 ```
 
----
-
-## 修正後
+例
 
 ```
-redirect_uri="https://cursor-soccerpdf-5fzyy7tmi9rhgb3fggjjkk.streamlit.app/"
-```
-
----
-
-# 6 Flow作成コード
-
-```
-flow = Flow.from_client_config(
-    client_config,
-    scopes=SCOPES,
-    redirect_uri="https://cursor-soccerpdf-5fzyy7tmi9rhgb3fggjjkk.streamlit.app/"
-)
-```
-
----
-
-# 7 認証URL生成
-
-```
-auth_url, state = flow.authorization_url(
-    access_type="offline",
-    include_granted_scopes="true"
-)
-```
-
----
-
-# 8 Streamlit UI
-
-```
-st.link_button(
-    "Googleログイン",
-    auth_url
-)
-```
-
----
-
-# 9 OAuth callback
-
-Google認証後 URL に以下が追加される。
-
-```
-?code=xxxxx
-```
-
-これを取得する。
-
-```
-code = st.query_params.get("code")
-```
-
----
-
-# 10 token取得
-
-```
-flow.fetch_token(code=code)
-
-creds = flow.credentials
-```
-
----
-
-# 11 セッション保存
-
-```
-st.session_state["google_creds"] = creds
-```
-
----
-
-# 12 カレンダーAPI
-
-```
-service = build(
-    "calendar",
-    "v3",
-    credentials=creds
-)
-```
-
----
-
-# 13 動作フロー
-
-```
-Googleログイン
+太夫浜球技場（フレンドリー）
 ↓
-Google OAuth
-↓
-Streamlit redirect
-↓
-code取得
-↓
-token取得
-↓
-Googleカレンダー登録
+太夫浜球技場
 ```
 
 ---
 
-# 14 動作環境
+## ルール2
 
-以下の環境すべてで動作する。
+### （ の出現以降の文字列を削除
 
 ```
-PC Chrome
-PC Safari
-iPhone Safari
-iPhone Chrome
-Android Chrome
-Streamlit Cloud
-ローカル開発
+"（" が見つかった場合
+その位置から後ろを削除
+```
+
+例
+
+```
+長岡ニュータウン（フレンドリー）
+↓
+長岡ニュータウン
 ```
 
 ---
 
-# 15 エラー解消
+## ルール3
 
-以下エラーが解消される。
+### 「※準備」を削除
 
 ```
-Error 400: redirect_uri_mismatch
+※準備
+```
+
+例
+
+```
+太夫浜球技場 ※準備
+↓
+太夫浜球技場
 ```
 
 ---
 
-# 16 完成状態
+## ルール4
+
+### 「※準備」以降のテキストを削除
 
 ```
-PDFアップロード
-↓
-試合抽出
-↓
-Googleログイン
-↓
-Googleカレンダー登録
+※準備：
+※準備 9時〜
+※準備：9時～ライン引き
 ```
 
-スマートフォンからも正常にログイン可能になる。
+例
+
+```
+太夫浜球技場 ※準備：9時～ライン引き
+↓
+太夫浜球技場
+```
+
+---
+
+# 4. 最終整形
+
+すべての処理後、以下を実行する
+
+### 前後の空白削除
+
+```
+trim()
+```
+
+### 連続スペース削除
+
+```
+"  " → " "
+```
+
+---
+
+# 5. 変換例
+
+| 元のlocation | 正規化後 |
+|---|---|
+| 太夫浜球技場 | 太夫浜球技場 |
+| 太夫浜球技場（フレンドリー） | 太夫浜球技場 |
+| 太夫浜球技場（フレンドリー） ※準備 | 太夫浜球技場 |
+| 太夫浜球技場 ※準備：9時～ライン引き | 太夫浜球技場 |
+| 長岡ニュータウン（フレンドリー） | 長岡ニュータウン |
+| 長岡ニュータウン（フレンドリー） ※準備 | 長岡ニュータウン |
+
+---
+
+# 6. 推奨実装方法
+
+正規表現で処理する。
+
+### 処理順
+
+1. `（.*?）` 削除
+2. `※準備.*` 削除
+3. trim
+
+---
+
+# 7. 擬似コード
+
+```
+function normalizeLocation(location):
+
+    # カッコ削除
+    location = remove_regex(location, "（.*?）")
+
+    # 準備テキスト削除
+    location = remove_regex(location, "※準備.*")
+
+    # trim
+    location = trim(location)
+
+    return location
+```
+
+---
+
+# 8. 拡張想定
+
+将来的に追加可能
+
+```
+【サブ】
+[人工芝]
+(雨天)
+※集合
+※駐車場
+```
+
+などの補足情報も削除ルールとして追加可能。
+
+# 会場管理仕様（簡略化版）
+
+## 1. 目的
+
+現在の会場管理は以下の3つに分かれている。
+
+- 取得会場キーワード一覧
+- 会場辞書
+- 会場登録フォーム
+
+この構成では
+
+- データ入力が分散する
+- 会場登録作業が複雑
+- 管理がしづらい
+
+という問題がある。
+
+そのため **会場管理を1つのテーブルで完結させる構造へ変更する。**
+
+---
+
+# 2. 変更後の構成
+
+### 旧構成
+
+```
+取得会場キーワード一覧
+        ↓
+会場辞書
+        ↓
+会場登録フォーム
+```
+
+### 新構成
+
+```
+会場住所編集（旧 会場辞書）
+
+すべてここで管理
+```
+
+---
+
+# 3. 画面名称変更
+
+変更前
+
+```
+会場辞書
+```
+
+変更後
+
+```
+会場住所編集
+```
+
+---
+
+# 4. テーブル構造
+
+会場住所編集テーブル
+
+| カラム | 内容 |
+|---|---|
+| keyword | 取得された会場名 |
+| address | 会場住所 |
+
+例
+
+| keyword | address |
+|---|---|
+| 太夫浜球技場 | 新潟県新潟市北区太夫浜 |
+| 長岡ニュータウン | 新潟県長岡市ニュータウン |
+
+---
+
+# 5. 取得会場キーワードの扱い
+
+Googleカレンダーなどから取得した **location** は  
+正規化処理を行ったあと
+
+```
+会場住所編集.keyword
+```
+
+に登録する。
+
+登録ルール
+
+```
+未登録のkeywordのみ追加
+```
+
+例
+
+取得
+
+```
+太夫浜球技場
+```
+
+辞書
+
+```
+未登録
+```
+
+↓
+
+自動追加
+
+```
+keyword: 太夫浜球技場
+address: （空）
+```
+
+---
+
+# 6. 住所登録方法
+
+addressは **直接入力方式**にする。
+
+### 入力方法
+
+```
+住所を入力
+↓
+Enterキー
+↓
+保存
+```
+
+保存ボタンは不要。
+
+---
+
+# 7. 会場登録フォームの削除
+
+以下は **廃止**
+
+```
+会場登録フォーム
+```
+
+理由
+
+```
+会場住所編集テーブルで直接登録できるため
+```
+
+---
+
+# 8. 処理フロー
+
+### カレンダー読み込み
+
+```
+Google Calendar
+       ↓
+location取得
+       ↓
+会場名正規化
+       ↓
+keyword抽出
+       ↓
+会場住所編集テーブル検索
+```
+
+### 分岐
+
+#### 登録済
+
+```
+住所取得
+```
+
+#### 未登録
+
+```
+keyword追加
+address 空
+```
+
+---
+
+# 9. UI仕様
+
+会場住所編集テーブル
+
+| keyword | address |
+|---|---|
+| 太夫浜球技場 | 新潟県新潟市北区太夫浜 |
+| 長岡ニュータウン | |
+
+### addressセル編集
+
+```
+クリック
+↓
+住所入力
+↓
+Enter
+↓
+保存
+```
+
+---
+
+# 10. 重複防止
+
+keywordは
+
+```
+ユニーク制約
+```
+
+をつける。
+
+```
+UNIQUE(keyword)
+```
+
+---
+
+# 11. データ追加タイミング
+
+取得時に追加
+
+```
+新規keywordのみ
+```
+
+---
+
+# 12. 期待効果
+
+改善点
+
+| 問題 | 改善 |
+|---|---|
+| 入力画面が複数ある | 1画面に統一 |
+| 会場登録が手間 | keyword自動追加 |
+| 住所入力が面倒 | 直接入力 |
+
+---
+
+# 13. 最終構成
+
+管理画面
+
+```
+開発者メニュー
+   ↓
+会場住所編集
+```
+
+ここで
+
+- keyword管理
+- address登録
+
+をすべて行う。

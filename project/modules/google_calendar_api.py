@@ -319,7 +319,7 @@ def list_calendars() -> List[dict[str, Any]]:
 
 
 def match_to_event_body(match: Match) -> dict[str, Any]:
-    """仕様 #40 のイベント構造を生成。"""
+    """仕様 #40 のイベント構造を生成。location は会場辞書で住所付きに解決する（地図・ナビ連携用）。"""
     start_dt, end_dt = match.start_end_datetimes()
     # ISO format with timezone
     start_str = start_dt.strftime("%Y-%m-%dT%H:%M:%S")
@@ -335,9 +335,16 @@ def match_to_event_body(match: Match) -> dict[str, Any]:
         detail_lines.append(f"副審: {match.assistant}")
     description = "\n".join(detail_lines)
 
+    # 会場名 → 住所 を解決（venue_master.csv）。未登録なら会場名のみ
+    try:
+        from .venue_resolver import resolve_location
+        location = resolve_location(match.location or "")
+    except Exception:  # noqa: BLE001
+        location = match.location or ""
+
     return {
         "summary": f"{match.teamA} vs {match.teamB}",
-        "location": match.location or "",
+        "location": location,
         "description": description,
         "start": {
             "dateTime": start_str,
