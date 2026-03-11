@@ -19,6 +19,7 @@ from modules.match_parser import (
 from modules.calendar_link import build_google_calendar_url
 from modules.google_calendar_api import (
     get_credentials_path,
+    get_redirect_uri_for_display,
     list_calendars,
     insert_events,
     get_credentials,
@@ -238,6 +239,34 @@ def main() -> None:
             st.session_state.google_calendars = None
 
         show_google_debug = st.checkbox("Google認証のデバッグ表示", value=False, key="google_debug")
+
+        # トラブルシュート: redirect_uri_mismatch / アクセスブロック の案内
+        with st.expander("Googleログインでエラーになる場合", expanded=False):
+            st.markdown("**Error 400: redirect_uri_mismatch の場合**")
+            st.markdown(
+                "1. 下の「現在の redirect_uri」をコピーし、"
+                "Google Cloud Console → [APIとサービス] → [認証情報] → 対象の OAuth 2.0 クライアント ID → "
+                "「認証済みリダイレクト URI」に **同じ文字列を 1 文字も変えず** 追加してください。"
+            )
+            st.markdown(
+                "2. まだエラーなら、末尾の `/` の有無を変えた 2 通りを両方 Console に登録して試してください。"
+                "（例: `https://xxx.streamlit.app` と `https://xxx.streamlit.app/`）"
+            )
+            uri = get_redirect_uri_for_display()
+            if uri:
+                st.code(uri, language="text")
+                st.caption("↑ この値を Google Console の「認証済みリダイレクト URI」に追加")
+            else:
+                st.caption("（Secrets に GOOGLE_REDIRECT_URI を設定するか、Streamlit Cloud で開いていれば自動で表示されます）")
+            st.markdown("---")
+            st.markdown("**「このアプリのリクエストは無効です」「アクセスをブロック」の場合**")
+            st.markdown(
+                "OAuth 同意画面が「テスト」のとき、ログインできるのは **テストユーザーに追加した Google アカウントだけ** です。"
+                "登録したアカウント以外でログインするには: "
+                "Google Cloud Console → [APIとサービス] → [OAuth 同意画面] → [テストユーザー] で、"
+                "ログインしたいメールアドレス（例: lafcreate.biz@gmail.com）を追加してください。"
+                "またはアプリを「本番」に公開すると、任意の Google アカウントでログインできます。"
+            )
 
         # コールバック: URL に ?code= が付いていればトークン取得してログイン済みにする
         code = st.query_params.get("code")

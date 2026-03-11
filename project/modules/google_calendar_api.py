@@ -70,12 +70,42 @@ def _get_token_path() -> Path:
     return PROJECT_DIR / "token.json"
 
 
+def _get_redirect_uri_from_request() -> str | None:
+    """
+    Streamlit のリクエストから現在のアプリのベースURLを組み立て、redirect_uri 候補を返す。
+    Streamlit Cloud ではこの値と Google Console の「認証済みリダイレクト URI」を完全一致させる。
+    """
+    try:
+        import streamlit as st
+        from urllib.parse import urlparse, urlunparse
+        # Streamlit 1.45+ では st.context.url で現在のURLが取れる
+        if hasattr(st, "context") and hasattr(st.context, "url") and st.context.url:
+            url = str(st.context.url).strip()
+            if url:
+                p = urlparse(url)
+                # クエリを除いたベースURLをそのまま使う（末尾 / も変えない）
+                base = urlunparse((p.scheme or "https", p.netloc, p.path or "/", "", "", ""))
+                return base
+        # フォールバック: Host ヘッダーから組み立て（Streamlit Cloud は https）
+        headers = getattr(st, "context", None) and getattr(st.context, "headers", None)
+        if headers:
+            host = headers.get("host") or headers.get("x-forwarded-host")
+            if host:
+                proto = headers.get("x-forwarded-proto", "https")
+                if isinstance(proto, str) and "," in proto:
+                    proto = proto.split(",")[0].strip()
+                return f"{proto}://{host}/"
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def _get_web_oauth_secrets() -> dict | None:
     """
     Streamlit Secrets から Web OAuth 用の client_id, client_secret, redirect_uri を取得。
     ローカル: GOOGLE_REDIRECT_URI 未設定時は http://localhost:8501 を使用。
-    Streamlit Cloud: GOOGLE_REDIRECT_URI は必須。ブラウザのアドレスバーと完全一致させる
-    （例: https://cursor-soccerpdf-5fzyy7tmi9rhgb3fggjjkk.streamlit.app）。一致しないと redirect_uri_mismatch になる。
+    Streamlit Cloud: GOOGLE_REDIRECT_URI が無ければリクエストから自動取得を試み、無い場合は必須。
+    redirect_uri は Google Console の「認証済みリダイレクト URI」と 1 文字も違わず一致させること。
     """
     try:
         import streamlit as st
@@ -84,16 +114,14 @@ def _get_web_oauth_secrets() -> dict | None:
         redirect_uri = os.environ.get("GOOGLE_REDIRECT_URI", "").strip()
         if not redirect_uri and "GOOGLE_REDIRECT_URI" in st.secrets:
             redirect_uri = str(st.secrets["GOOGLE_REDIRECT_URI"]).strip()
+        if not redirect_uri and _is_production_mode():
+            redirect_uri = _get_redirect_uri_from_request() or ""
         if not redirect_uri:
-            # 本番（Streamlit Cloud）では未設定のままにせず、get_auth_url でエラーにする
-            if _is_production_mode():
-                redirect_uri = ""
-            else:
-                redirect_uri = "http://localhost:8501"
+            redirect_uri = "http://localhost:8501" if not _is_production_mode() else ""
         return {
             "client_id": str(st.secrets["GOOGLE_CLIENT_ID"]).strip(),
             "client_secret": str(st.secrets["GOOGLE_CLIENT_SECRET"]).strip(),
-            # redirect_uri は Google 側で「完全一致」判定されるため、末尾の / を含めて改変しない
+            # redirect_uri は Google 側で完全一致のため改変しない
             "redirect_uri": redirect_uri if redirect_uri else "",
         }
     except Exception:  # noqa: BLE001
@@ -106,6 +134,14 @@ def get_credentials_path() -> Path | None:
     if _get_web_oauth_secrets() is not None:
         return PROJECT_DIR / ".streamlit" / "secrets.toml"
     return _find_credentials_file()
+
+
+def get_redirect_uri_for_display() -> str | None:
+    """現在使用している redirect_uri を返す（デバッグ・トラブルシュート用）。未設定時は None。"""
+    s = _get_web_oauth_secrets()
+    if not s or not (s.get("redirect_uri") or "").strip():
+        return None
+    return (s.get("redirect_uri") or "").strip()
 
 
 CALENDAR_LOG_PATH = PROJECT_DIR / "logs" / "google_calendar.log"
@@ -347,6 +383,7 @@ def insert_events(calendar_id: str, matches: List[Match]) -> tuple[int, List[str
 __all__ = [
     "get_credentials",
     "get_credentials_path",
+    "get_redirect_uri_for_display",
     "get_auth_url",
     "process_oauth_callback",
     "list_calendars",
