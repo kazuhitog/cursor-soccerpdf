@@ -101,6 +101,7 @@ def main() -> None:
     st.sidebar.header("開発者向け")
     show_special_team = st.sidebar.checkbox("特殊チーム名設定を表示", value=True, key="sidebar_show_special_team")
     show_venue_register = st.sidebar.checkbox("会場住所編集", value=False, key="sidebar_show_venue_register")
+    show_google_login_button = st.sidebar.checkbox("Google ログインボタンを表示", value=True, key="sidebar_show_google_login_button")
     debug_mode = st.sidebar.checkbox("PDFデバッグモード", key="sidebar_debug")
     dev_mode = st.sidebar.checkbox("開発者モード", key="sidebar_dev")
 
@@ -294,17 +295,20 @@ def main() -> None:
         if not st.session_state.google_logged_in:
             creds = get_credentials()
             if creds is None:
-                try:
-                    auth_url = get_auth_url()
-                    st.link_button("Googleでログイン", auth_url, type="primary")
-                    st.caption("クリックすると Google の認証画面に移動します。許可後、このアプリに戻ります。")
-                except FileNotFoundError as e:
-                    st.warning(str(e))
-                except Exception as e:  # noqa: BLE001
-                    st.error(f"認証URLの取得に失敗しました: {e}")
-                    if show_google_debug:
-                        with st.expander("エラー詳細", expanded=True):
-                            st.code(traceback.format_exc(), language="text")
+                if show_google_login_button:
+                    try:
+                        auth_url = get_auth_url()
+                        st.link_button("Googleでログイン", auth_url, type="primary")
+                        st.caption("クリックすると Google の認証画面に移動します。許可後、このアプリに戻ります。")
+                    except FileNotFoundError as e:
+                        st.warning(str(e))
+                    except Exception as e:  # noqa: BLE001
+                        st.error(f"認証URLの取得に失敗しました: {e}")
+                        if show_google_debug:
+                            with st.expander("エラー詳細", expanded=True):
+                                st.code(traceback.format_exc(), language="text")
+                else:
+                    st.info("Google ログインボタンは開発者向けメニューで非表示になっています。")
             else:
                 st.session_state.google_logged_in = True
                 cal_list = list_calendars()
