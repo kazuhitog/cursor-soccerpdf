@@ -11,6 +11,7 @@ import streamlit as st
 from modules.pdf_reader import read_pdf_lines
 from modules.match_parser import (
     parse_matches_from_lines,
+    extract_team_names,
     filter_matches_by_team,
     load_special_team_names,
     save_special_team_names,
@@ -109,10 +110,31 @@ def main() -> None:
     debug_mode = st.sidebar.checkbox("PDFデバッグモード", value=False, key="sidebar_debug")
     dev_mode = st.sidebar.checkbox("開発者モード", value=False, key="sidebar_dev")
 
+    if "team_options" not in st.session_state:
+        st.session_state.team_options = ["ハマーズ"]
+
+    if "selected_team" not in st.session_state:
+        st.session_state.selected_team = "ハマーズ"
+
+    if "pending_selected_team" not in st.session_state:
+        st.session_state.pending_selected_team = None
+
+    if st.session_state.pending_selected_team is not None:
+        st.session_state.selected_team = st.session_state.pending_selected_team
+        st.session_state.pending_selected_team = None
     # チーム名とPDFアップロードを横並び
     col1, col2 = st.columns(2)
+    
     with col1:
-        team_name = st.text_input("チーム名", value="ハマーズ", placeholder="例: ハマーズ")
+        team_name = st.selectbox(
+            "チーム名",
+            options=st.session_state.team_options,
+            index=st.session_state.team_options.index(st.session_state.selected_team)
+            if st.session_state.selected_team in st.session_state.team_options else 0,
+            key="selected_team",
+        )
+
+
     with col2:
         uploaded_file = st.file_uploader("試合日程PDF", type=["pdf"])
 
@@ -156,31 +178,54 @@ def main() -> None:
             st.session_state.df_team = None
         else:
             st.session_state.matches_all = matches_all
-            # 取得会場を正規化し、未登録の keyword のみ会場住所編集テーブルに追加
+
+            # チーム候補を抽出してセレクト候補を更新
+            team_options = extract_team_names(matches_all)
+            st.session_state.team_options = team_options
+
+            # デフォルト選択
+            if "ハマーズ" in team_options:
+                st.session_state.pending_selected_team = "ハマーズ"
+            elif team_options:
+                st.session_state.pending_selected_team = team_options[0]
+            else:
+                st.session_state.pending_selected_team = "ハマーズ"
+
+            # 会場キーワード登録
             ensure_venue_keywords(
                 normalize_location(m.location) for m in matches_all if m.location and str(m.location).strip()
             )
 
-            # チーム名フィルタ
-            if not team_name.strip():
-                filtered = matches_all
-            else:
-                filtered = filter_matches_by_team(matches_all, team_name)
+            # ここでは filtered / df_team を作らず、再描画して selectbox 側に反映させる
+            st.rerun()
 
-            st.session_state.filtered_matches = filtered or []
-
-            if filtered:
-                team_dicts: List[dict] = [m.to_dict() for m in filtered]
-                st.session_state.df_team = pd.DataFrame(team_dicts)
-            else:
-                st.session_state.df_team = None
-
-    # セッションからデータを取得
+        # セッションからデータを取得
     lines: List[str] = st.session_state.lines
     extracted_text: str = st.session_state.extracted_text
     matches_all = st.session_state.matches_all
-    filtered = st.session_state.filtered_matches
-    df_team = st.session_state.df_team
+
+    # 現在のセレクト値
+    current_team = st.session_state.selected_team
+
+    # 抽出済みなら、毎回 current_team で再フィルタする
+    if matches_all:
+        if not current_team.strip():
+            filtered = list(matches_all)
+        else:
+            filtered = filter_matches_by_team(matches_all, current_team)
+
+        st.session_state.filtered_matches = filtered
+
+        if filtered:
+            team_dicts: List[dict] = [m.to_dict() for m in filtered]
+            df_team = pd.DataFrame(team_dicts)
+            st.session_state.df_team = df_team
+        else:
+            df_team = pd.DataFrame()
+            st.session_state.df_team = df_team
+    else:
+        filtered = None
+        df_team = None
 
     # 抽出前の状態
     if matches_all is None:
@@ -194,7 +239,7 @@ def main() -> None:
     # 自チーム試合一覧
     st.subheader("自チーム試合一覧")
     if not filtered:
-        st.info(f"「{team_name}」が含まれる試合は見つかりませんでした。")
+        st.info(f"「{current_team}」が含まれる試合は見つかりませんでした。")
         return
 
     # 表示用に age_group, no を除外し、会場名（location）は正規化して表示

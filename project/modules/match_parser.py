@@ -246,19 +246,54 @@ def parse_matches_from_lines(lines: Iterable[str], year: int | None = None) -> L
 
     return matches
 
+EXCLUDED_TEAM_NAMES = {
+    "1位",
+    "2位",
+    "3位",
+    "4位",
+    "5位",
+    "6位",
+    "7位",
+    "8位",
+    "1試合目勝者",
+    "40A1位",
+    "40B1位",
+    "40C",
+    "40C1位",
+    "50A",
+    "50A1位",
+    "50B1位",
+    "70A",
+    "70B",
+}
+
+def normalize_team_candidate(name: str) -> str:
+    s = (name or "").strip()
+    s = re.sub(r"\s+", " ", s)
+    s = s.strip(" 　-–—/｜|:：()[]{}【】「」")
+    return s
+
+
+
 # チーム名一覧取得関数
 def extract_team_names(matches: Iterable[Match]) -> List[str]:
     """
     Match一覧からチーム名を重複なしで抽出して返す。
     デフォルトで「ハマーズ」を先頭候補に含める。
+    除外リストに一致する文字列は候補に入れない。
     """
     team_set: set[str] = set()
 
     for m in matches:
         if m.teamA and m.teamA.strip():
-            team_set.add(m.teamA.strip())
+            team_a = m.teamA.strip()
+            if team_a not in EXCLUDED_TEAM_NAMES:
+                team_set.add(team_a)
+
         if m.teamB and m.teamB.strip():
-            team_set.add(m.teamB.strip())
+            team_b = m.teamB.strip()
+            if team_b not in EXCLUDED_TEAM_NAMES:
+                team_set.add(team_b)
 
     teams = sorted(team_set)
 
