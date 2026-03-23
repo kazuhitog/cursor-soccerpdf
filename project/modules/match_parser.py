@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Dict, Any, Iterable
+from typing import List, Dict, Any, Iterable, Set
 
 
 logger = logging.getLogger(__name__)
@@ -246,6 +246,28 @@ def parse_matches_from_lines(lines: Iterable[str], year: int | None = None) -> L
 
     return matches
 
+# チーム名一覧取得関数
+def extract_team_names(matches: Iterable[Match]) -> List[str]:
+    """
+    Match一覧からチーム名を重複なしで抽出して返す。
+    デフォルトで「ハマーズ」を先頭候補に含める。
+    """
+    team_set: set[str] = set()
+
+    for m in matches:
+        if m.teamA and m.teamA.strip():
+            team_set.add(m.teamA.strip())
+        if m.teamB and m.teamB.strip():
+            team_set.add(m.teamB.strip())
+
+    teams = sorted(team_set)
+
+    # デフォルト候補としてハマーズを先頭に置く
+    if "ハマーズ" in teams:
+        teams.remove("ハマーズ")
+    teams.insert(0, "ハマーズ")
+
+    return teams
 
 def filter_matches_by_team(matches: Iterable[Match], team_name: str) -> List[Match]:
     """
@@ -265,6 +287,7 @@ def filter_matches_by_team(matches: Iterable[Match], team_name: str) -> List[Mat
 __all__ = [
     "Match",
     "parse_matches_from_lines",
+    "extract_team_names",
     "filter_matches_by_team",
     "load_special_team_names",
     "save_special_team_names",
