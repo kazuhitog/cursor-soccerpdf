@@ -5,6 +5,9 @@ import traceback
 from pathlib import Path
 from typing import List
 
+import html
+import streamlit.components.v1 as components
+
 import pandas as pd
 import streamlit as st
 
@@ -35,13 +38,18 @@ from modules.venue_resolver import (
     ensure_venue_keywords,
     save_venue_master,
 )
+from modules.match_snapshot import (
+    save_matches_snapshot,
+    load_matches_snapshot,
+    list_snapshots,
+)
+from modules.match_diff import diff_matches, build_diff_rows
 
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 PDF_DIR = DATA_DIR / "pdf"
 LOGS_DIR = BASE_DIR / "logs"
-
 
 def _render_special_team_section() -> None:
     """特殊チーム名の追加・削除UI（画面最下部の expander 内で使用）。"""
@@ -155,9 +163,17 @@ def main() -> None:
         st.session_state.matches_all = None
         st.session_state.filtered_matches = None
         st.session_state.df_team = None
+    
     if "google_logged_in" not in st.session_state:
         st.session_state.google_logged_in = False
-
+    if "diff_result" not in st.session_state:
+        st.session_state.diff_result = None
+    if "diff_snapshot_name" not in st.session_state:
+        st.session_state.diff_snapshot_name = ""
+    if "diff_snapshot_pdf_name" not in st.session_state:
+        st.session_state.diff_snapshot_pdf_name = ""
+    if "diff_target_teams" not in st.session_state:
+        st.session_state.diff_target_teams = []
     # 解析ボタン
     extract_clicked = st.button("試合を抽出する")
 
@@ -225,7 +241,107 @@ def main() -> None:
     else:
         filtered = None
         df_team = None
+    if matches_all:
+        st.markdown("---")
+        st.subheader("差分比較")
 
+        snapshot_label = st.text_input(
+            "保存名",
+            value="base",
+            key="snapshot_label",
+            help="基準版として保存する名前です。",
+        )
+
+        col_diff_1, col_diff_2 = st.columns([1, 2])
+
+        with col_diff_1:
+            if st.button("現在の抽出結果を保存", key="save_snapshot_btn"):
+                saved_path = save_matches_snapshot(
+                    matches=matches_all,
+                    pdf_name=uploaded_file.name,
+                    label=snapshot_label,
+                )
+                st.success(f"保存しました: {saved_path.name}")
+
+        snapshots = list_snapshots()
+        snapshot_options = {
+            f"{item['name']} | {item['label']} | {item['pdf_name']}": item["path"]
+            for item in snapshots
+        }
+
+        with col_diff_2:
+            selected_snapshot_label = st.selectbox(
+                "比較する保存済みデータ",
+                options=[""] + list(snapshot_options.keys()),
+                key="selected_snapshot_path",
+            )
+
+        if selected_snapshot_label:
+            if st.button("保存済みデータと比較", key="compare_snapshot_btn"):
+                snapshot_path = snapshot_options[selected_snapshot_label]
+                old_snapshot = load_matches_snapshot(snapshot_path)
+
+                # 保存済みデータ（旧版）と現在PDF（新版）
+                old_matches_all = old_snapshot["matches"]
+                new_matches_all = matches_all
+
+                # 選択中チームで絞り込み
+                if not current_teams:
+                    old_matches = list(old_matches_all)
+                    new_matches = list(new_matches_all)
+                else:
+                    old_matches = filter_matches_by_teams(old_matches_all, current_teams)
+                    new_matches = filter_matches_by_teams(new_matches_all, current_teams)
+
+                diff_result = diff_matches(old_matches, new_matches)
+
+                st.session_state.diff_result = diff_result
+                st.session_state.diff_snapshot_name = old_snapshot["name"]
+                st.session_state.diff_snapshot_pdf_name = old_snapshot["pdf_name"]
+                st.session_state.diff_target_teams = list(current_teams)
+
+        diff_result = st.session_state.get("diff_result")
+        if diff_result:
+            added_count = len(diff_result["added"])
+            removed_count = len(diff_result["removed"])
+            changed_count = len(diff_result["changed"])
+            target_teams = st.session_state.get("diff_target_teams", [])
+            target_label = "、".join(target_teams) if target_teams else "全チーム"
+            st.markdown(
+                f"""
+**比較結果**
+- 対象チーム: {target_label}
+- 基準版: {st.session_state.get("diff_snapshot_name", "")}
+- 追加: {added_count}件
+- 削除: {removed_count}件
+- 変更: {changed_count}件
+"""
+            )
+
+            diff_rows = build_diff_rows(diff_result)
+
+            if diff_rows:
+                df_diff = pd.DataFrame(diff_rows)
+
+                diff_csv = df_diff.drop(columns=["_row_type"], errors="ignore").to_csv(index=False)
+                st.download_button(
+                    "差分CSVエクスポート",
+                    data=diff_csv,
+                    file_name="match_diff.csv",
+                    mime="text/csv",
+                    key="download_diff_csv",
+                )
+
+                display_df = df_diff.copy()
+                html_table = render_diff_table_html(display_df)
+
+                row_count = len(display_df)
+                table_height = min(max(260, (row_count + 1) * 42), 720)
+
+                components.html(html_table, height=table_height, scrolling=True)
+            else:
+                st.info("差分はありません。")
+    
     # 抽出前の状態
     if matches_all is None:
         st.info("「試合を抽出する」ボタンを押して抽出を実行してください。")
@@ -513,6 +629,81 @@ def main() -> None:
                 f"location={m.location}"
             )
 
+def render_diff_table_html(df: pd.DataFrame) -> str:
+    columns = [col for col in df.columns if col != "_row_type"]
+
+    def row_style(row_type: str) -> str:
+        if row_type in ("before", "removed"):
+            return (
+                "border-left: 6px solid rgba(255, 90, 90, 0.95);"
+                "background: rgba(255, 90, 90, 0.10);"
+            )
+        if row_type in ("after", "added"):
+            return (
+                "border-left: 6px solid rgba(60, 200, 120, 0.95);"
+                "background: rgba(60, 200, 120, 0.10);"
+            )
+        return ""
+
+    th_html = "".join(
+        f"""
+        <th style="
+            position: sticky;
+            top: 0;
+            background: #1e1e1e;
+            color: #f5f5f5;
+            text-align: left;
+            padding: 10px 12px;
+            border-bottom: 1px solid rgba(255,255,255,0.12);
+            font-weight: 600;
+            white-space: nowrap;
+        ">{html.escape(str(col))}</th>
+        """
+        for col in columns
+    )
+
+    tr_html_list = []
+    for _, row in df.iterrows():
+        current_style = row_style(str(row.get("_row_type", "")))
+        td_html = "".join(
+            f"""
+            <td style="
+                padding: 9px 12px;
+                border-bottom: 1px solid rgba(255,255,255,0.08);
+                color: #f5f5f5;
+                white-space: nowrap;
+            ">{html.escape('' if pd.isna(row[col]) else str(row[col]))}</td>
+            """
+            for col in columns
+        )
+        tr_html_list.append(f'<tr style="{current_style}">{td_html}</tr>')
+
+    body_html = "\n".join(tr_html_list)
+
+    return f"""
+    <div style="
+        overflow-x: auto;
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 10px;
+        background: #0e1117;
+        font-family: sans-serif;
+    ">
+        <table style="
+            width: 100%;
+            border-collapse: collapse;
+            background: #0e1117;
+            color: #f5f5f5;
+            font-size: 14px;
+        ">
+            <thead>
+                <tr>{th_html}</tr>
+            </thead>
+            <tbody>
+                {body_html}
+            </tbody>
+        </table>
+    </div>
+    """
 
 if __name__ == "__main__":
     main()
