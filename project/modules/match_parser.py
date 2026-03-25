@@ -265,6 +265,7 @@ EXCLUDED_TEAM_NAMES = {
     "50B1位",
     "70A",
     "70B",
+    "×",
 }
 
 def normalize_team_candidate(name: str) -> str:
@@ -306,24 +307,51 @@ def extract_team_names(matches: Iterable[Match]) -> List[str]:
 
 def filter_matches_by_team(matches: Iterable[Match], team_name: str) -> List[Match]:
     """
-    team_name を含む試合だけを抽出。
+    指定した team_name と完全一致する試合だけを抽出。
+    前後空白や連続スペースの揺れだけ吸収する。
     """
-    team_name = (team_name or "").strip()
-    if not team_name:
+    target = normalize_team_candidate(team_name)
+    if not target:
         return list(matches)
 
     result: List[Match] = []
     for m in matches:
-        if team_name in m.teamA or team_name in m.teamB:
+        team_a = normalize_team_candidate(m.teamA)
+        team_b = normalize_team_candidate(m.teamB)
+
+        if target == team_a or target == team_b:
             result.append(m)
     return result
 
+def filter_matches_by_teams(matches: Iterable[Match], team_names: Iterable[str]) -> List[Match]:
+    """
+    指定した team_names のいずれかに完全一致する試合だけを抽出。
+    """
+    targets = {
+        normalize_team_candidate(name)
+        for name in team_names
+        if normalize_team_candidate(name)
+    }
+
+    if not targets:
+        return list(matches)
+
+    result: List[Match] = []
+    for m in matches:
+        team_a = normalize_team_candidate(m.teamA)
+        team_b = normalize_team_candidate(m.teamB)
+
+        if team_a in targets or team_b in targets:
+            result.append(m)
+
+    return result
 
 __all__ = [
     "Match",
     "parse_matches_from_lines",
     "extract_team_names",
     "filter_matches_by_team",
+    "filter_matches_by_teams",
     "load_special_team_names",
     "save_special_team_names",
     "get_special_team_names_path",

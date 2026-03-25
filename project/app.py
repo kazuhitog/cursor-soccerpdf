@@ -13,6 +13,7 @@ from modules.match_parser import (
     parse_matches_from_lines,
     extract_team_names,
     filter_matches_by_team,
+    filter_matches_by_teams,
     load_special_team_names,
     save_special_team_names,
     get_special_team_names_path,
@@ -100,7 +101,7 @@ def main() -> None:
     )
     st.title("サッカー日程PDF → Googleカレンダー登録ツール")
 
-    st.markdown("PDFからテキストを解析し、**自チームの試合だけ** を抽出して Google カレンダーリンクやエクスポートデータを生成します。")
+    st.markdown("PDFからテキストを解析し、**選択したチームの試合** を抽出して Google カレンダーリンクやエクスポートデータを生成します。")
 
     # 開発者向け（サイドバー）※表示・非表示はここで一元管理。表示順は「全試合データ」の下で統一
     st.sidebar.header("開発者向け")
@@ -113,25 +114,23 @@ def main() -> None:
     if "team_options" not in st.session_state:
         st.session_state.team_options = ["ハマーズ"]
 
-    if "selected_team" not in st.session_state:
-        st.session_state.selected_team = "ハマーズ"
+    if "selected_teams" not in st.session_state:
+        st.session_state.selected_teams = ["ハマーズ"]
 
-    if "pending_selected_team" not in st.session_state:
-        st.session_state.pending_selected_team = None
+    if "pending_selected_teams" not in st.session_state:
+        st.session_state.pending_selected_teams = None
 
-    if st.session_state.pending_selected_team is not None:
-        st.session_state.selected_team = st.session_state.pending_selected_team
-        st.session_state.pending_selected_team = None
+    if st.session_state.pending_selected_teams is not None:
+        st.session_state.selected_teams = st.session_state.pending_selected_teams
+        st.session_state.pending_selected_teams = None
     # チーム名とPDFアップロードを横並び
     col1, col2 = st.columns(2)
     
     with col1:
-        team_name = st.selectbox(
+        selected_teams = st.multiselect(
             "チーム名",
             options=st.session_state.team_options,
-            index=st.session_state.team_options.index(st.session_state.selected_team)
-            if st.session_state.selected_team in st.session_state.team_options else 0,
-            key="selected_team",
+            key="selected_teams",
         )
 
 
@@ -185,11 +184,11 @@ def main() -> None:
 
             # デフォルト選択
             if "ハマーズ" in team_options:
-                st.session_state.pending_selected_team = "ハマーズ"
+                st.session_state.pending_selected_teams = "ハマーズ"
             elif team_options:
-                st.session_state.pending_selected_team = team_options[0]
+                st.session_state.pending_selected_teams = team_options[0]
             else:
-                st.session_state.pending_selected_team = "ハマーズ"
+                st.session_state.pending_selected_teams = []
 
             # 会場キーワード登録
             ensure_venue_keywords(
@@ -205,14 +204,14 @@ def main() -> None:
     matches_all = st.session_state.matches_all
 
     # 現在のセレクト値
-    current_team = st.session_state.selected_team
+    current_teams = st.session_state.selected_teams
 
     # 抽出済みなら、毎回 current_team で再フィルタする
     if matches_all:
-        if not current_team.strip():
+        if not current_teams:
             filtered = list(matches_all)
         else:
-            filtered = filter_matches_by_team(matches_all, current_team)
+            filtered = filter_matches_by_teams(matches_all, current_teams)
 
         st.session_state.filtered_matches = filtered
 
@@ -236,10 +235,11 @@ def main() -> None:
     all_dicts: List[dict] = [m.to_dict() for m in matches_all]
     df_all = pd.DataFrame(all_dicts)
 
-    # 自チーム試合一覧
-    st.subheader("自チーム試合一覧")
+    # 選択チーム試合一覧
+    st.subheader("選択チーム試合一覧")
     if not filtered:
-        st.info(f"「{current_team}」が含まれる試合は見つかりませんでした。")
+        selected_label = "、".join(current_teams) if current_teams else "未選択"
+        st.info(f"「{selected_label}」に該当する試合は見つかりませんでした。")
         return
 
     # 表示用に age_group, no を除外し、会場名（location）は正規化して表示
@@ -247,7 +247,14 @@ def main() -> None:
     df_team_display = df_team.drop(columns=[c for c in cols_hidden if c in df_team.columns], errors="ignore").copy()
     if "location" in df_team_display.columns:
         df_team_display["location"] = df_team_display["location"].apply(lambda x: normalize_location(str(x)) if x else "")
-    st.dataframe(df_team_display, use_container_width=True)
+    row_count = len(df_team_display)
+    table_height = min(max(220, (row_count + 1) * 35), 700)
+
+    st.dataframe(
+        df_team_display,
+        use_container_width=True,
+        height=table_height,
+    )
 
     # Google カレンダーリンク生成
     st.subheader("Googleカレンダーリンク生成")
