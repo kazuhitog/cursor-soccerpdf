@@ -11,9 +11,10 @@ import streamlit.components.v1 as components
 import pandas as pd
 import streamlit as st
 
-from modules.pdf_reader import read_pdf_lines
+from modules.pdf_reader import read_pdf_lines, read_pdf_pages
 from modules.match_parser import (
     parse_matches_from_lines,
+    parse_matches_from_pages,
     extract_team_names,
     filter_matches_by_team,
     filter_matches_by_teams,
@@ -179,13 +180,8 @@ def main() -> None:
 
     if extract_clicked:
         # テキスト抽出
-        lines = read_pdf_lines(pdf_path)
-        extracted_text = "\n".join(lines)
-        st.session_state.lines = lines
-        st.session_state.extracted_text = extracted_text
-
-        # 試合抽出（全試合）
-        matches_all = parse_matches_from_lines(lines)
+    # ページ単位で読み込む
+        pages = read_pdf_pages(pdf_path)
         if not matches_all:
             st.warning("試合行を検出できませんでした。PDFの形式を確認してください。")
             st.session_state.matches_all = None

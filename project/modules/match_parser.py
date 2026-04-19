@@ -14,6 +14,9 @@ DATE_BLOCK_PATTERN = re.compile(r"(\d{1,2})月(\d{1,2})日")
 HEADER_LINE_PATTERN = re.compile(r"開催日：\s*(\d+月\d+日)\s*会場：(.+)")
 AGE_GROUP_PATTERN = re.compile(r"^\d{2}[A-Z]?$")
 MATCH_HEAD_PATTERN = re.compile(r"^\d+\s+\d{1,2}:\d{2}")
+AGE_GROUP_TOKEN_PATTERN = re.compile(r"\b(?:40A|40B|40C|50A|50B|60|70)\b")
+LOCATION_ONLY_PATTERN = re.compile(r"会場：(.+)")
+
 
 # 例外チーム名（スペースを含むチーム名）。ファイルが無い場合のデフォルト。
 DEFAULT_SPECIAL_TEAM_NAMES = [
@@ -156,7 +159,7 @@ def parse_matches_from_lines(lines: Iterable[str], year: int | None = None) -> L
         year = detected_year
 
     current_date: str | None = None
-    current_location: str | None = None
+    # current_location: str | None = None
     current_age_group: str | None = None
     matches: List[Match] = []
 
@@ -169,11 +172,10 @@ def parse_matches_from_lines(lines: Iterable[str], year: int | None = None) -> L
         m_header = HEADER_LINE_PATTERN.search(original)
         if m_header:
             date_text = m_header.group(1)
-            loc_text = m_header.group(2).strip()
+            # loc_text = m_header.group(2).strip()
             norm_date = _normalize_date_from_block(date_text, year=year)
             if norm_date:
                 current_date = norm_date
-            current_location = loc_text
             continue
 
         # 日付ブロックの更新
@@ -237,7 +239,7 @@ def parse_matches_from_lines(lines: Iterable[str], year: int | None = None) -> L
                 teamB=away,
                 referee=referee,
                 assistant=assistant,
-                location=current_location or "",
+                location="",
             )
             matches.append(match)
         except Exception:  # noqa: BLE001
@@ -346,9 +348,103 @@ def filter_matches_by_teams(matches: Iterable[Match], team_names: Iterable[str])
 
     return result
 
+
+def parse_matches_from_pages(pages: Iterable[Iterable[str]], year: int | None = None) -> List[Match]:
+    all_matches: List[Match] = []
+
+    if year is None:
+        detected_year: int | None = None
+        for page_lines in pages:
+            for raw in page_lines:
+                m_year = re.search(r"(\d{4})年", raw)
+                if m_year:
+                    try:
+                        detected_year = int(m_year.group(1))
+                        break
+                    except Exception:
+                        continue
+            if detected_year is not None:
+                break
+        year = detected_year
+
+    for page_lines in pages:
+        page_line_list = list(page_lines)
+
+        page_matches = parse_matches_from_lines(page_line_list, year=year)
+        location_map = _extract_page_date_age_location_map(page_line_list, year=year)
+        _assign_locations_to_matches(page_matches, location_map)
+
+        all_matches.extend(page_matches)
+
+    return all_matches
+
+def _extract_page_date_age_location_map(
+    page_lines: Iterable[str],
+    year: int | None = None,
+) -> dict[tuple[str, str], str]:
+    location_map: dict[tuple[str, str], str] = {}
+    current_date: str | None = None
+    pending_age_groups: list[str] = []
+
+    for raw in page_lines:
+        original = raw.strip()
+        if not original:
+            continue
+
+        # 日付を更新
+        new_date = _normalize_date_from_block(original, year=year)
+        if new_date:
+            current_date = new_date
+
+        # 行中から年代を全部拾う
+        found_age_groups = AGE_GROUP_TOKEN_PATTERN.findall(original)
+        for age in found_age_groups:
+            if age not in pending_age_groups:
+                pending_age_groups.append(age)
+
+        location: str | None = None
+
+        # 「開催日： 4月25日 会場：○○」形式
+        m_header = HEADER_LINE_PATTERN.search(original)
+        if m_header:
+            date_text = m_header.group(1)
+            loc_text = m_header.group(2).strip()
+            norm_date = _normalize_date_from_block(date_text, year=year)
+            if norm_date:
+                current_date = norm_date
+            location = loc_text
+        else:
+            # 「会場：○○」だけの行
+            m_loc = LOCATION_ONLY_PATTERN.search(original)
+            if m_loc:
+                location = m_loc.group(1).strip()
+
+        # 直前に見つけた年代群へ会場を割り当てる
+        if location and current_date and pending_age_groups:
+            for age in pending_age_groups:
+                location_map[(current_date, age)] = location
+            pending_age_groups = []
+
+    return location_map
+
+def _assign_locations_to_matches(
+    matches: List[Match],
+    location_map: dict[tuple[str, str], str],
+) -> None:
+    for m in matches:
+        if not m.age_group:
+            continue
+
+        key = (m.date, m.age_group)
+        if key in location_map:
+            m.location = location_map[key]
+
+
+
 __all__ = [
     "Match",
     "parse_matches_from_lines",
+    "parse_matches_from_pages",
     "extract_team_names",
     "filter_matches_by_team",
     "filter_matches_by_teams",
@@ -356,4 +452,3 @@ __all__ = [
     "save_special_team_names",
     "get_special_team_names_path",
 ]
-
