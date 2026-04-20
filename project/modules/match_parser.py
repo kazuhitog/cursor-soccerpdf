@@ -11,7 +11,9 @@ from typing import List, Dict, Any, Iterable
 logger = logging.getLogger(__name__)
 
 DATE_BLOCK_PATTERN = re.compile(r"(\d{1,2})月(\d{1,2})日")
-HEADER_LINE_PATTERN = re.compile(r"開催日：\s*(\d+月\d+日)\s*会場：(.+)")
+HEADER_LINE_PATTERN = re.compile(
+    r"開催日：\s*(\d+月\d+日(?:（[^）]+）|\([^)]+\))?)\s*会場：(.+)"
+)
 AGE_GROUP_PATTERN = re.compile(r"^\d{2}[A-Z]?$")
 MATCH_HEAD_PATTERN = re.compile(r"^\d+\s+\d{1,2}:\d{2}")
 AGE_GROUP_TOKEN_PATTERN = re.compile(r"\b(?:40A|40B|40C|50A|50B|60|70)\b")
@@ -629,7 +631,6 @@ def _extract_page_date_age_location_map(
                 "location": "",
                 "age_groups": [],
                 "has_match": False,
-                "lines": [original],
             }
 
             m_header = HEADER_LINE_PATTERN.search(original)
