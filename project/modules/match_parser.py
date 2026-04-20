@@ -631,6 +631,7 @@ def _extract_page_date_age_location_map(
                 "location": "",
                 "age_groups": [],
                 "has_match": False,
+                "lines": [original],
             }
 
             m_header = HEADER_LINE_PATTERN.search(original)
