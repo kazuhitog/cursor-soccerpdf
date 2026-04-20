@@ -17,7 +17,7 @@ MATCH_HEAD_PATTERN = re.compile(r"^\d+\s+\d{1,2}:\d{2}")
 AGE_GROUP_TOKEN_PATTERN = re.compile(r"\b(?:40A|40B|40C|50A|50B|60|70)\b")
 LOCATION_ONLY_PATTERN = re.compile(r"会場：(.+)")
 GROUP_START_PATTERN = re.compile(r"^開催日：")
-
+LAST_SKIPPED_LOCATION_GROUPS: List[SkippedLocationGroup] = []
 
 # 例外チーム名（スペースを含むチーム名）。ファイルが無い場合のデフォルト。
 DEFAULT_SPECIAL_TEAM_NAMES = [
@@ -30,6 +30,8 @@ DEFAULT_SPECIAL_TEAM_NAMES = [
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 SPECIAL_TEAM_NAMES_FILE = PROJECT_DIR / "data" / "special_team_names.txt"
 
+def get_last_skipped_location_groups() -> List[SkippedLocationGroup]:
+    return list(LAST_SKIPPED_LOCATION_GROUPS)
 
 def get_special_team_names_path() -> Path:
     """特殊チーム名一覧ファイルのパスを返す。"""
@@ -97,6 +99,26 @@ class Match:
         end = start + timedelta(minutes=120)
         return start, end
 
+@dataclass
+class SkippedLocationGroup:
+    page_index: int
+    date: str
+    location: str
+    age_groups: List[str]
+    has_match: bool
+    reason: str
+    lines: List[str]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "page_index": self.page_index,
+            "date": self.date,
+            "location": self.location,
+            "age_groups": ",".join(self.age_groups),
+            "has_match": self.has_match,
+            "reason": self.reason,
+            "lines": "\n".join(self.lines),
+        }
 
 def _normalize_date_from_block(text: str, year: int | None = None) -> str | None:
     """
@@ -503,6 +525,9 @@ def filter_matches_by_teams(matches: Iterable[Match], team_names: Iterable[str])
 
 
 def parse_matches_from_pages(pages: Iterable[Iterable[str]], year: int | None = None) -> List[Match]:
+    global LAST_SKIPPED_LOCATION_GROUPS
+    LAST_SKIPPED_LOCATION_GROUPS = []
+
     page_list = [list(page) for page in pages]
     all_matches: List[Match] = []
 
@@ -521,13 +546,18 @@ def parse_matches_from_pages(pages: Iterable[Iterable[str]], year: int | None = 
                 break
         year = detected_year
 
-    for page_lines in page_list:
-        # 新方式
+    for page_index, page_lines in enumerate(page_list, start=1):
         page_matches = parse_matches_from_lines(page_lines, year=year)
-        location_map = _extract_page_date_age_location_map(page_lines, year=year)
+
+        location_map, skipped_groups = _extract_page_date_age_location_map(
+            page_lines,
+            page_index=page_index,
+            year=year,
+        )
+        LAST_SKIPPED_LOCATION_GROUPS.extend(skipped_groups)
+
         _assign_locations_to_matches(page_matches, location_map)
 
-        # 旧方式は空欄だけ補完
         legacy_matches = parse_matches_from_lines_legacy(page_lines, year=year)
         _fill_missing_locations_from_legacy(page_matches, legacy_matches)
 
@@ -537,56 +567,60 @@ def parse_matches_from_pages(pages: Iterable[Iterable[str]], year: int | None = 
 
 def _extract_page_date_age_location_map(
     page_lines: Iterable[str],
+    page_index: int,
     year: int | None = None,
-) -> dict[tuple[str, str], str]:
-    """
-    開催日： から次の 開催日： の直前までを1グループとして、
-    グループ先頭の会場を、そのグループ内の年代へ割り当てる。
-
-    追加仕様:
-    - グループ内に試合行が1件もない場合はスキップ
-    - 全国大会など通常リーグでない会場は除外
-    """
+) -> tuple[dict[tuple[str, str], str], List[SkippedLocationGroup]]:
     lines = [str(x).strip() for x in page_lines if str(x).strip()]
     location_map: dict[tuple[str, str], str] = {}
+    skipped_groups: List[SkippedLocationGroup] = []
 
     current_page_date: str | None = None
-
-    groups: list[dict[str, Any]] = []
     current_group: dict[str, Any] | None = None
 
     def finalize_group(group: dict[str, Any] | None) -> None:
         if not group:
             return
 
-        group_date = group.get("date")
+        group_date = group.get("date") or ""
         group_location = (group.get("location") or "").strip()
         group_age_groups = list(dict.fromkeys(group.get("age_groups") or []))
         group_has_match = bool(group.get("has_match"))
+        group_lines = list(group.get("lines") or [])
 
-        # 仕様: 試合行が無いグループはスキップ
+        reason = ""
         if not group_has_match:
-            return
+            reason = "試合行なし"
+        elif not group_date:
+            reason = "日付なし"
+        elif not group_location:
+            reason = "会場なし"
+        elif _is_ignored_location(group_location):
+            reason = "除外対象会場"
+        elif not group_age_groups:
+            reason = "年代なし"
 
-        if not group_date:
-            return
-        if not group_location:
-            return
-        if _is_ignored_location(group_location):
-            return
-        if not group_age_groups:
+        if reason:
+            skipped_groups.append(
+                SkippedLocationGroup(
+                    page_index=page_index,
+                    date=group_date,
+                    location=group_location,
+                    age_groups=group_age_groups,
+                    has_match=group_has_match,
+                    reason=reason,
+                    lines=group_lines,
+                )
+            )
             return
 
         for age in group_age_groups:
             location_map[(group_date, age)] = group_location
 
     for original in lines:
-        # ページ上で日付が出たら更新
         new_date = _normalize_date_from_block(original, year=year)
         if new_date:
             current_page_date = new_date
 
-        # グループ開始
         if GROUP_START_PATTERN.search(original):
             finalize_group(current_group)
 
@@ -595,9 +629,9 @@ def _extract_page_date_age_location_map(
                 "location": "",
                 "age_groups": [],
                 "has_match": False,
+                "lines": [original],
             }
 
-            # 開催日： 会場：... が同じ行にある場合
             m_header = HEADER_LINE_PATTERN.search(original)
             if m_header:
                 date_text = m_header.group(1)
@@ -612,11 +646,11 @@ def _extract_page_date_age_location_map(
 
             continue
 
-        # グループ開始前は無視
         if current_group is None:
             continue
 
-        # グループ内の最初の会場を拾う
+        current_group["lines"].append(original)
+
         if not current_group["location"]:
             m_loc = LOCATION_ONLY_PATTERN.search(original)
             if m_loc:
@@ -624,20 +658,17 @@ def _extract_page_date_age_location_map(
                 if loc_text and not _is_ignored_location(loc_text):
                     current_group["location"] = loc_text
 
-        # 年代を収集
         found_age_groups = AGE_GROUP_TOKEN_PATTERN.findall(original)
         for age in found_age_groups:
             if age not in current_group["age_groups"]:
                 current_group["age_groups"].append(age)
 
-        # 試合行があるか判定
         if _looks_like_match_line(original):
             current_group["has_match"] = True
 
     finalize_group(current_group)
 
-    return location_map
-
+    return location_map, skipped_groups
 
 def _assign_locations_to_matches(
     matches: List[Match],
@@ -679,4 +710,5 @@ __all__ = [
     "load_special_team_names",
     "save_special_team_names",
     "get_special_team_names_path",
+    "get_last_skipped_location_groups",
 ]

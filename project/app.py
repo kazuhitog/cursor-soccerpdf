@@ -20,6 +20,7 @@ from modules.match_parser import (
     load_special_team_names,
     save_special_team_names,
     get_special_team_names_path,
+    get_last_skipped_location_groups,
 )
 from modules.calendar_link import build_google_calendar_url
 from modules.google_calendar_api import (
@@ -622,18 +623,27 @@ def main() -> None:
             st.write(f"{i}: {line}")
         st.markdown("---")
 
-    if dev_mode and matches_all:
+    if dev_mode:
         st.markdown("**開発者モード**")
-        st.write("抽出結果（開発者モード）")
-        first = matches_all[0]
-        st.write(f"DATE = {first.date}")
-        st.write(f"LOCATION = {first.location}")
-        for idx, m in enumerate(matches_all, start=1):
-            st.write(
-                f"Line {idx}: age={m.age_group} no={m.no} time={m.time} "
-                f"home={m.teamA} away={m.teamB} referee={m.referee} assistant={m.assistant} "
-                f"location={m.location}"
-            )
+        skipped_groups = get_last_skipped_location_groups()
+        if skipped_groups:
+            st.markdown("### 新方式で空欄となった開催日グループ")
+            skipped_df = pd.DataFrame([g.to_dict() for g in skipped_groups])
+            st.dataframe(skipped_df, use_container_width=True)
+        else:
+            st.info("新方式でスキップされた開催日グループはありません。")
+
+        if matches_all:
+            st.write("抽出結果（開発者モード）")
+            first = matches_all[0]
+            st.write(f"DATE = {first.date}")
+            st.write(f"LOCATION = {first.location}")
+            for idx, m in enumerate(matches_all, start=1):
+                st.write(
+                    f"Line {idx}: age={m.age_group} no={m.no} time={m.time} "
+                    f"home={m.teamA} away={m.teamB} referee={m.referee} assistant={m.assistant} "
+                    f"location={m.location}"
+                )
 
 def render_diff_table_html(df: pd.DataFrame) -> str:
     columns = [col for col in df.columns if col != "_row_type"]
