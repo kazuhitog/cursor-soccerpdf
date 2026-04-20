@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Dict, Any, Iterable, Set
+from typing import List, Dict, Any, Iterable
 
 
 logger = logging.getLogger(__name__)
@@ -350,11 +350,12 @@ def filter_matches_by_teams(matches: Iterable[Match], team_names: Iterable[str])
 
 
 def parse_matches_from_pages(pages: Iterable[Iterable[str]], year: int | None = None) -> List[Match]:
+    page_list = [list(page) for page in pages]
     all_matches: List[Match] = []
 
     if year is None:
         detected_year: int | None = None
-        for page_lines in pages:
+        for page_lines in page_list:
             for raw in page_lines:
                 m_year = re.search(r"(\d{4})年", raw)
                 if m_year:
@@ -367,13 +368,10 @@ def parse_matches_from_pages(pages: Iterable[Iterable[str]], year: int | None = 
                 break
         year = detected_year
 
-    for page_lines in pages:
-        page_line_list = list(page_lines)
-
-        page_matches = parse_matches_from_lines(page_line_list, year=year)
-        location_map = _extract_page_date_age_location_map(page_line_list, year=year)
+    for page_lines in page_list:
+        page_matches = parse_matches_from_lines(page_lines, year=year)
+        location_map = _extract_page_date_age_location_map(page_lines, year=year)
         _assign_locations_to_matches(page_matches, location_map)
-
         all_matches.extend(page_matches)
 
     return all_matches

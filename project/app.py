@@ -11,9 +11,8 @@ import streamlit.components.v1 as components
 import pandas as pd
 import streamlit as st
 
-from modules.pdf_reader import read_pdf_lines, read_pdf_pages
+from modules.pdf_reader import read_pdf_pages
 from modules.match_parser import (
-    parse_matches_from_lines,
     parse_matches_from_pages,
     extract_team_names,
     filter_matches_by_team,
@@ -127,11 +126,11 @@ def main() -> None:
         st.session_state.selected_teams = ["ハマーズ"]
 
     if "pending_selected_teams" not in st.session_state:
-        st.session_state.pending_selected_teams = None
+        st.session_state.pending_selected_teams = []
 
-    if st.session_state.pending_selected_teams is not None:
+    if st.session_state.pending_selected_teams:
         st.session_state.selected_teams = st.session_state.pending_selected_teams
-        st.session_state.pending_selected_teams = None
+        st.session_state.pending_selected_teams = []
     # チーム名とPDFアップロードを横並び
     col1, col2 = st.columns(2)
     
@@ -180,37 +179,48 @@ def main() -> None:
 
     if extract_clicked:
         # テキスト抽出
-    # ページ単位で読み込む
         pages = read_pdf_pages(pdf_path)
-        if not matches_all:
+
+        lines = [line for page in pages for line in page]
+        extracted_text = "\n".join(lines)
+
+        st.session_state.lines = lines
+        st.session_state.extracted_text = extracted_text
+
+        # 新方式: ページ単位で試合抽出 + 会場後付け
+        parsed_matches = parse_matches_from_pages(pages)
+
+        if not parsed_matches:
             st.warning("試合行を検出できませんでした。PDFの形式を確認してください。")
             st.session_state.matches_all = None
             st.session_state.filtered_matches = None
             st.session_state.df_team = None
         else:
-            st.session_state.matches_all = matches_all
+            st.session_state.matches_all = parsed_matches
 
             # チーム候補を抽出してセレクト候補を更新
-            team_options = extract_team_names(matches_all)
+            team_options = extract_team_names(parsed_matches)
             st.session_state.team_options = team_options
 
             # デフォルト選択
             if "ハマーズ" in team_options:
-                st.session_state.pending_selected_teams = "ハマーズ"
+                st.session_state.pending_selected_teams = ["ハマーズ"]
             elif team_options:
-                st.session_state.pending_selected_teams = team_options[0]
+                st.session_state.pending_selected_teams = [team_options[0]]
             else:
                 st.session_state.pending_selected_teams = []
 
             # 会場キーワード登録
             ensure_venue_keywords(
-                normalize_location(m.location) for m in matches_all if m.location and str(m.location).strip()
+                normalize_location(m.location) 
+                for m in parsed_matches 
+                if m.location and str(m.location).strip()
             )
 
             # ここでは filtered / df_team を作らず、再描画して selectbox 側に反映させる
             st.rerun()
 
-        # セッションからデータを取得
+    # セッションからデータを取得
     lines: List[str] = st.session_state.lines
     extracted_text: str = st.session_state.extracted_text
     matches_all = st.session_state.matches_all

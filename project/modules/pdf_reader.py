@@ -23,6 +23,14 @@ def read_pdf_lines(pdf_path: Path) -> List[str]:
 
 
 def read_pdf_pages(pdf_path: Path) -> List[List[str]]:
+    """
+    PDF をページごとの行配列で返す。
+    返却例:
+    [
+        ["1ページ目の1行目", "1ページ目の2行目", ...],
+        ["2ページ目の1行目", "2ページ目の2行目", ...],
+    ]
+    """
     pdf_path = Path(pdf_path)
     pages: List[List[str]] = []
 
