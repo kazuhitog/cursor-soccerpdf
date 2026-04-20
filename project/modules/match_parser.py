@@ -135,6 +135,8 @@ def _restore_special_team_name(name: str) -> str:
     """
     return name.replace("_", " ")
 
+def _match_identity_key(m: Match) -> tuple[str, str, str, str]:
+    return (m.date, m.time, m.teamA, m.teamB)
 
 def parse_matches_from_lines(lines: Iterable[str], year: int | None = None) -> List[Match]:
     """
@@ -270,6 +272,116 @@ EXCLUDED_TEAM_NAMES = {
     "×",
 }
 
+def parse_matches_from_lines_legacy(lines: Iterable[str], year: int | None = None) -> List[Match]:
+    """
+    旧方式の抽出。
+    current_location を使って、その時点で見えている会場を各試合へ付与する。
+    誤ることはあるが、location の取りこぼしが少ないため、
+    新方式で空だった location を埋めるフォールバックとして使う。
+    """
+    special_names = load_special_team_names()
+    line_list = list(lines)
+
+    if year is None:
+        detected_year: int | None = None
+        for raw in line_list:
+            m_year = re.search(r"(\d{4})年", raw)
+            if m_year:
+                try:
+                    detected_year = int(m_year.group(1))
+                    break
+                except Exception:
+                    continue
+        year = detected_year
+
+    current_date: str | None = None
+    current_location: str | None = None
+    current_age_group: str | None = None
+    matches: List[Match] = []
+
+    for raw in line_list:
+        original = raw.strip()
+        if not original:
+            continue
+
+        m_header = HEADER_LINE_PATTERN.search(original)
+        if m_header:
+            date_text = m_header.group(1)
+            loc_text = m_header.group(2).strip()
+            norm_date = _normalize_date_from_block(date_text, year=year)
+            if norm_date:
+                current_date = norm_date
+            current_location = loc_text
+            continue
+
+        new_date = _normalize_date_from_block(original, year=year)
+        if new_date:
+            current_date = new_date
+            continue
+
+        m_loc = LOCATION_ONLY_PATTERN.search(original)
+        if m_loc:
+            loc_text = m_loc.group(1).strip()
+            if loc_text:
+                current_location = loc_text
+
+        line = _apply_special_team_join(original, special_names)
+        tokens = line.replace("：", ":").split()
+
+        if tokens:
+            last_token = tokens[-1]
+            if AGE_GROUP_PATTERN.match(last_token):
+                current_age_group = last_token
+                continue
+
+        if not current_date:
+            continue
+
+        if not MATCH_HEAD_PATTERN.match(line):
+            if not tokens or len(tokens) < 3:
+                continue
+            if not (AGE_GROUP_PATTERN.match(tokens[0]) and MATCH_HEAD_PATTERN.match(" ".join(tokens[1:3]))):
+                continue
+
+        try:
+            age_group: str | None
+            no: int
+            time_str: str
+
+            if tokens and AGE_GROUP_PATTERN.match(tokens[0]):
+                age_group = tokens[0]
+                no = int(tokens[1])
+                time_str = tokens[2]
+                base_idx = 3
+            else:
+                age_group = current_age_group
+                no = int(tokens[0])
+                time_str = tokens[1]
+                base_idx = 2
+
+            home = _restore_special_team_name(tokens[base_idx])
+            away = _restore_special_team_name(tokens[base_idx + 2])
+            referee = _restore_special_team_name(tokens[base_idx + 3]) if len(tokens) > base_idx + 3 else ""
+            assistant = _restore_special_team_name(tokens[base_idx + 4]) if len(tokens) > base_idx + 4 else ""
+
+            match = Match(
+                date=current_date,
+                age_group=age_group,
+                no=no,
+                time=time_str,
+                teamA=home,
+                teamB=away,
+                referee=referee,
+                assistant=assistant,
+                location=current_location or "",
+            )
+            matches.append(match)
+        except Exception:
+            _log_parse_error(line)
+            continue
+
+    return matches
+
 def normalize_team_candidate(name: str) -> str:
     s = (name or "").strip()
     s = re.sub(r"\s+", " ", s)
@@ -369,9 +481,15 @@ def parse_matches_from_pages(pages: Iterable[Iterable[str]], year: int | None = 
         year = detected_year
 
     for page_lines in page_list:
+        # 新方式で抽出
         page_matches = parse_matches_from_lines(page_lines, year=year)
         location_map = _extract_page_date_age_location_map(page_lines, year=year)
         _assign_locations_to_matches(page_matches, location_map)
+
+        # 旧方式で抽出（空欄補完用）
+        legacy_matches = parse_matches_from_lines_legacy(page_lines, year=year)
+        _fill_missing_locations_from_legacy(page_matches, legacy_matches)
+
         all_matches.extend(page_matches)
 
     return all_matches
@@ -483,7 +601,23 @@ def _assign_locations_to_matches(
         if key in location_map:
             m.location = location_map[key]
 
+def _fill_missing_locations_from_legacy(
+    matches: List[Match],
+    legacy_matches: List[Match],
+) -> None:
+    legacy_map = {
+        _match_identity_key(m): m.location
+        for m in legacy_matches
+        if m.location and str(m.location).strip()
+    }
 
+    for m in matches:
+        if m.location and str(m.location).strip():
+            continue
+        key = _match_identity_key(m)
+        legacy_location = legacy_map.get(key, "")
+        if legacy_location:
+            m.location = legacy_location
 
 __all__ = [
     "Match",
