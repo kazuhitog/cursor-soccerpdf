@@ -1,5 +1,22 @@
 # サッカー試合PDF → Googleカレンダー ツール 仕様書
 
+## 起動・停止
+
+**起動**（アプリは `project/` 配下のみが正式版です）
+
+```bash
+cd project
+pip install -r requirements.txt   # 初回のみ
+streamlit run app.py
+```
+
+ブラウザで `http://localhost:8501` を開きます。仮想環境を使う場合は、先に `source .venv/bin/activate`（パスは環境に合わせてください）を実行してから上記を行います。
+
+**停止**  
+Streamlit を起動したターミナルで **Ctrl+C** を押す。バックグラウンドで動かしている場合は、該当プロセスを終了する（例: `pkill -f "streamlit run app.py"`）。
+
+---
+
 **この README を読み込むだけで、同じ構成・同じアプリを再現して起動できる** ことを目的とする。  
 本文で仕様を説明し、**付録 A** に各ファイルのパスと完全な内容を記載する。付録のコードブロックを指定パスに保存し、**付録 B** の手順で起動する。
 
